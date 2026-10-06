@@ -1,0 +1,6 @@
+time,throttle,brakePressureFront,brakePressureRear,brakePedalTravel,steerAngle
+0.00,0.00,0.00,0.00,0.00,0.0
+0.50,1.00,0.00,0.00,0.00,0.0
+4.00,1.00,0.00,0.00,0.00,0.0
+6.00,0.00,0.00,0.00,0.00,0.0
+8.00,0.00,0.00,0.00,0.00,0.0
