@@ -30,7 +30,7 @@ def main() -> None:
             args.csv,
             args.output,
             width=args.width,
-            height=args.height,g
+            height=args.height,
         )
 
 
