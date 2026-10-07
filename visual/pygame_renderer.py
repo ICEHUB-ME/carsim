@@ -88,18 +88,24 @@ def _game_driver_inputs(controls: GameControls) -> DriverInputs:
 
 
 def _manual_override_inputs(csv_inputs: DriverInputs, controls: GameControls) -> DriverInputs:
-    """Override only CSV throttle/brake fields while manual mode is enabled."""
-    manual = controls.manual_driver_values()
-    if manual is None:
-        return csv_inputs
-    throttle, brake = manual
-    return replace(
-        csv_inputs,
-        throttle=throttle,
-        brake_pressure_front=brake,
-        brake_pressure_rear=brake,
-        brake_pedal_travel=brake,
-    )
+    """Override only the CSV fields whose manual modes are enabled."""
+    overrides: dict[str, float] = {}
+
+    manual_pedals = controls.manual_driver_values()
+    if manual_pedals is not None:
+        throttle, brake = manual_pedals
+        overrides.update(
+            throttle=throttle,
+            brake_pressure_front=brake,
+            brake_pressure_rear=brake,
+            brake_pedal_travel=brake,
+        )
+
+    manual_steering = controls.manual_steering_value()
+    if manual_steering is not None:
+        overrides["steering_angle_deg"] = manual_steering
+
+    return replace(csv_inputs, **overrides) if overrides else csv_inputs
 
 
 def _new_output_rows() -> list[dict[str, float]]:
@@ -285,15 +291,13 @@ def run_csv_replay(
                     running = False
                 else:
                     playback.handle_event(event)
-                    # M/manual input is allowed in replay. All driving keys are ignored.
-                    if event.type == pygame.KEYDOWN and event.key == pygame.K_m:
-                        controls.handle_event(
-                            event,
-                            current_throttle=current_csv_driver.throttle,
-                            current_brake=current_csv_driver.brake_pedal_travel,
-                        )
-                    else:
-                        controls.handle_event(event)
+                    # M/K manual overrides are allowed in replay. W/S/A/D/Space remain ignored.
+                    controls.handle_event(
+                        event,
+                        current_throttle=current_csv_driver.throttle,
+                        current_brake=current_csv_driver.brake_pedal_travel,
+                        current_steering=current_csv_driver.steering_angle_deg,
+                    )
 
             if not running:
                 interrupted = True

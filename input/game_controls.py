@@ -1,4 +1,4 @@
-"""Keyboard controls and manual pedal override for pygame modes."""
+"""Keyboard controls and manual pedal/steering overrides for pygame modes."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ class GameControlState:
 
 
 class GameControls:
-    """Keyboard driver inputs with game-mode smoothing plus manual pedal entry.
+    """Keyboard driver inputs with smoothing and independent manual overrides.
 
     Normal game controls:
       W      -> throttle target = 100%
@@ -31,18 +31,27 @@ class GameControls:
       A      -> steering target = +max angle (RIGHT)
       D      -> steering target = -max angle (LEFT)
 
-    Manual mode:
+    Manual pedal mode:
       M      -> toggle manual throttle/brake override
-      TAB    -> select throttle/brake field
-      0-9    -> enter percentage digits
-      Enter  -> apply the typed percentage (0-100)
-      Backspace -> delete a digit
 
-    Manual throttle/brake values are direct (no smoothing). Steering continues
-    to use the configured game-mode smoothing. The same manual state can be
-    used by CSV replay to override CSV throttle/brake values without applying
-    game smoothing.
+    Manual steering mode:
+      K      -> toggle manual steering-angle override
+
+    Text entry:
+      TAB    -> cycle through active manual fields
+      0-9    -> enter digits
+      -      -> enter a negative steering angle
+      Enter  -> apply the typed value
+      Backspace -> delete a character
+
+    Manual overrides are direct values and do not use game-mode smoothing.
+    When both manual modes are enabled, TAB cycles through throttle, brake,
+    and steering. The same state is used by CSV replay, where enabled manual
+    fields replace only their corresponding CSV inputs.
     """
+
+    _PEDAL_FIELDS = ("throttle", "brake")
+    _STEER_FIELD = "steering"
 
     def __init__(
         self,
@@ -58,26 +67,62 @@ class GameControls:
         self.state = GameControlState()
 
         self.manual_mode = False
+        self.manual_steer_mode = False
         self.manual_field = "throttle"
         self.manual_throttle = 0.0
         self.manual_brake = 0.0
+        self.manual_steering_angle_deg = 0.0
         self._manual_buffer = ""
 
     @property
     def manual_buffer(self) -> str:
         return self._manual_buffer
 
+    @property
+    def manual_steering(self) -> float:
+        """Return the configured manual steering angle in degrees."""
+        return self.manual_steering_angle_deg
+
+    def _active_manual_fields(self) -> tuple[str, ...]:
+        fields: list[str] = []
+        if self.manual_mode:
+            fields.extend(self._PEDAL_FIELDS)
+        if self.manual_steer_mode:
+            fields.append(self._STEER_FIELD)
+        return tuple(fields)
+
+    def _ensure_valid_manual_field(self) -> None:
+        active = self._active_manual_fields()
+        if not active:
+            self.manual_field = "throttle"
+        elif self.manual_field not in active:
+            self.manual_field = active[0]
+
     def _manual_percent(self) -> float:
         if not self._manual_buffer:
             return 0.0
         return max(0.0, min(100.0, float(self._manual_buffer))) / 100.0
 
+    def _manual_steering_degrees(self) -> float:
+        if not self._manual_buffer or self._manual_buffer == "-":
+            return 0.0
+        value = float(self._manual_buffer)
+        return max(
+            -self.max_steering_angle_deg,
+            min(self.max_steering_angle_deg, value),
+        )
+
     def _apply_manual_buffer(self) -> None:
-        value = self._manual_percent()
-        if self.manual_field == "throttle":
-            self.manual_throttle = value
-        else:
-            self.manual_brake = value
+        if not self._manual_buffer:
+            return
+
+        if self.manual_field == "steering":
+            self.manual_steering_angle_deg = self._manual_steering_degrees()
+        elif self.manual_field == "throttle":
+            self.manual_throttle = self._manual_percent()
+        elif self.manual_field == "brake":
+            self.manual_brake = self._manual_percent()
+
         self._manual_buffer = ""
 
     def set_manual_values(self, throttle: float, brake: float) -> None:
@@ -85,31 +130,60 @@ class GameControls:
         self.manual_throttle = max(0.0, min(1.0, float(throttle)))
         self.manual_brake = max(0.0, min(1.0, float(brake)))
 
+    def set_manual_steering(self, angle_deg: float) -> None:
+        """Set the manual steering angle directly, clamped to max steering."""
+        self.manual_steering_angle_deg = max(
+            -self.max_steering_angle_deg,
+            min(self.max_steering_angle_deg, float(angle_deg)),
+        )
+
     def toggle_manual_mode(
         self,
         current_throttle: float | None = None,
         current_brake: float | None = None,
     ) -> bool:
-        """Toggle manual pedal override and return the new state.
-
-        Optional current values let CSV replay enter manual mode without a
-        sudden pedal jump from the CSV value to the controller's previous value.
-        """
+        """Toggle manual throttle/brake override and return its new state."""
         self.manual_mode = not self.manual_mode
         self._manual_buffer = ""
         if self.manual_mode:
             throttle = self.state.throttle if current_throttle is None else current_throttle
             brake = self.state.brake_pedal_travel if current_brake is None else current_brake
             self.set_manual_values(throttle, brake)
+            if self.manual_field not in self._active_manual_fields():
+                self.manual_field = "throttle"
+        self._ensure_valid_manual_field()
         return self.manual_mode
+
+    def toggle_manual_steer(
+        self,
+        current_steering: float | None = None,
+    ) -> bool:
+        """Toggle direct manual steering override and return its new state."""
+        self.manual_steer_mode = not self.manual_steer_mode
+        self._manual_buffer = ""
+        if self.manual_steer_mode:
+            steering = (
+                self.state.steering_angle_deg
+                if current_steering is None
+                else current_steering
+            )
+            self.set_manual_steering(steering)
+            self.manual_field = "steering"
+        else:
+            self._ensure_valid_manual_field()
+        return self.manual_steer_mode
 
     def handle_event(
         self,
         event,
         current_throttle: float | None = None,
         current_brake: float | None = None,
+        current_steering: float | None = None,
     ) -> bool:
-        """Handle mode/entry keys. Return True when manual mode changed."""
+        """Handle manual-mode toggles and text-entry keys.
+
+        Returns True when either manual mode is toggled.
+        """
         import pygame
 
         if event.type != pygame.KEYDOWN:
@@ -119,12 +193,19 @@ class GameControls:
             self.toggle_manual_mode(current_throttle, current_brake)
             return True
 
-        if not self.manual_mode:
+        if event.key == pygame.K_k:
+            self.toggle_manual_steer(current_steering)
+            return True
+
+        if not self._active_manual_fields():
             return False
 
         if event.key == pygame.K_TAB:
-            self.manual_field = "brake" if self.manual_field == "throttle" else "throttle"
-            self._manual_buffer = ""
+            active = self._active_manual_fields()
+            if active:
+                current_index = active.index(self.manual_field) if self.manual_field in active else -1
+                self.manual_field = active[(current_index + 1) % len(active)]
+                self._manual_buffer = ""
             return False
 
         if event.key == pygame.K_BACKSPACE:
@@ -142,19 +223,37 @@ class GameControls:
             pygame.K_9: "9",
         }
         digit = digit_map.get(event.key)
-        if digit is not None and len(self._manual_buffer) < 3:
-            self._manual_buffer += digit
-            # Three digits can only exceed 100 for values such as 999. Keep the
-            # display editable and clamp on Enter rather than silently changing it.
+        if digit is not None:
+            max_length = 4 if self.manual_field == "steering" else 3
+            if len(self._manual_buffer) < max_length:
+                self._manual_buffer += digit
+            return False
+
+        minus_keys = tuple(
+            key for key in (
+                getattr(pygame, "K_MINUS", None),
+                getattr(pygame, "K_KP_MINUS", None),
+            )
+            if key is not None
+        )
+        if self.manual_field == "steering" and event.key in minus_keys:
+            if not self._manual_buffer:
+                self._manual_buffer = "-"
             return False
 
         return False
 
     def manual_driver_values(self) -> tuple[float, float] | None:
-        """Return (throttle, brake) overrides, or None when manual mode is off."""
+        """Return (throttle, brake) overrides, or None when pedal mode is off."""
         if not self.manual_mode:
             return None
         return self.manual_throttle, self.manual_brake
+
+    def manual_steering_value(self) -> float | None:
+        """Return manual steering override in degrees, or None when off."""
+        if not self.manual_steer_mode:
+            return None
+        return self.manual_steering_angle_deg
 
     def update(self, dt: float, keys) -> GameControlState:
         import pygame
@@ -186,16 +285,20 @@ class GameControls:
                 self.state.brake_pressure_rear, brake_target, self.brake_rate * dt
             )
 
-        # Requested game-mode direction: A = right/positive, D = left/negative.
-        steer_target = 0.0
-        if keys[pygame.K_a] and not keys[pygame.K_d]:
-            steer_target = self.max_steering_angle_deg
-        elif keys[pygame.K_d] and not keys[pygame.K_a]:
-            steer_target = -self.max_steering_angle_deg
+        # Manual steering is direct. Otherwise A=RIGHT/positive and D=LEFT/negative.
+        if self.manual_steer_mode:
+            self.state.steering_angle_deg = self.manual_steering_angle_deg
+        else:
+            steer_target = 0.0
+            if keys[pygame.K_a] and not keys[pygame.K_d]:
+                steer_target = self.max_steering_angle_deg
+            elif keys[pygame.K_d] and not keys[pygame.K_a]:
+                steer_target = -self.max_steering_angle_deg
 
-        self.state.steering_angle_deg = approach(
-            self.state.steering_angle_deg,
-            steer_target,
-            self.steering_rate_deg * dt,
-        )
+            self.state.steering_angle_deg = approach(
+                self.state.steering_angle_deg,
+                steer_target,
+                self.steering_rate_deg * dt,
+            )
+
         return self.state

@@ -66,26 +66,35 @@ class HUD:
         self._draw_pedal(surface, brake_rect, "BRAKE", car.state.brake_pedal)
 
     def _draw_manual_panel(self, surface, controls, y0: int) -> int:
-        width = 405
-        height = 96
+        width = 430
+        height = 128
         x = surface.get_width() - width - 14
         panel = pygame.Surface((width, height), pygame.SRCALPHA)
         panel.fill((15, 15, 15, 232))
         pygame.draw.rect(panel, self.BORDER, panel.get_rect(), 1, border_radius=6)
 
-        mode = "ON" if controls.manual_mode else "OFF"
-        color = self.ACTIVE if controls.manual_mode else self.MUTED
-        self._text(panel, f"MANUAL PEDALS: {mode}", 12, 8, self.small, color)
+        pedal_mode = "ON" if controls.manual_mode else "OFF"
+        steer_mode = "ON" if controls.manual_steer_mode else "OFF"
+        pedal_color = self.ACTIVE if controls.manual_mode else self.MUTED
+        steer_color = self.ACTIVE if controls.manual_steer_mode else self.MUTED
+
+        self._text(panel, f"MANUAL PEDALS: {pedal_mode}", 12, 8, self.small, pedal_color)
+        self._text(panel, f"MANUAL STEER:  {steer_mode}", 215, 8, self.small, steer_color)
 
         throttle = f"Throttle: {controls.manual_throttle * 100:3.0f}%"
         brake = f"Brake:    {controls.manual_brake * 100:3.0f}%"
+        steering = f"Steer:   {controls.manual_steering_angle_deg:+5.1f} deg"
         selected = controls.manual_field.upper()
         buffer = controls.manual_buffer or "_"
-        self._text(panel, throttle, 12, 29, self.small)
-        self._text(panel, brake, 12, 47, self.small)
-        self._text(panel, f"Edit: {selected:8s} {buffer}", 205, 29, self.small)
-        self._text(panel, "M toggle  TAB field  digits + ENTER", 205, 47, self.small, self.MUTED)
-        self._text(panel, "BACKSPACE erase", 205, 65, self.small, self.MUTED)
+
+        self._text(panel, throttle, 12, 30, self.small)
+        self._text(panel, brake, 12, 48, self.small)
+        self._text(panel, steering, 12, 66, self.small)
+        self._text(panel, f"Edit: {selected:8s} {buffer}", 215, 30, self.small)
+        self._text(panel, "M pedals   K steering", 215, 49, self.small, self.MUTED)
+        self._text(panel, "TAB field   digits + ENTER", 215, 67, self.small, self.MUTED)
+        self._text(panel, "BACKSPACE erase   '-' = negative steer", 12, 88, self.small, self.MUTED)
+        self._text(panel, "Manual values are direct (no smoothing).", 12, 107, self.small, self.MUTED)
 
         surface.blit(panel, (x, y0))
         return y0 + height
@@ -157,15 +166,14 @@ class HUD:
         surface.blit(panel, panel_rect.topleft)
         self.draw_pedals(surface, car)
 
-        manual_y = surface.get_height() - 164
         if manual_controls is not None:
-            self._draw_manual_panel(surface, manual_controls, manual_y)
+            self._draw_manual_panel(surface, manual_controls, surface.get_height() - 196)
 
         if step_mode:
             hint = "STEP MODE: T toggle realtime   F step exactly 1 physics frame   ESC quit"
         elif controls_help:
-            hint = "W throttle   S / SPACE brake   A right   D left   T step mode   M manual   ESC quit"
+            hint = "W throttle   S / SPACE brake   A right   D left   T step   M pedals   K steer   ESC quit"
         else:
-            hint = "CSV: W/S/A/D/SPACE disabled   T step mode   F step   M manual override   ESC quit"
+            hint = "CSV: W/S/A/D/SPACE disabled   T step   F step   M pedals   K steer   ESC quit"
         hint_surface = self.small.render(hint, True, self.MUTED)
         surface.blit(hint_surface, (24, surface.get_height() - 27))

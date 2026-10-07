@@ -325,3 +325,11 @@ from csv_output import OUTPUT_FIELDS, rows_to_columns, save_simulation_csv
 Do **not** change this to `from .csv_output import ...` unless the entire project is converted to a package and launched with `python -m ...`. Using a leading-dot relative import while running `main.py` directly causes `ImportError: attempted relative import with no known parent package`.
 
 Both game mode and CSV simulation/replay use the same `csv_output.py` functions, so there is only one CSV output implementation to maintain.
+
+## Manual steering override
+
+`K` toggles manual steering mode. While it is ON, A/D do not change steering and the angle is held directly at the manually entered value. Use `-` for negative angles and `ENTER` to apply, with the value clamped to ±30°.
+
+Manual text entry uses `TAB` to cycle through active fields. With manual pedals and manual steering both enabled, the fields are `THROTTLE`, `BRAKE`, and `STEERING`.
+
+Game mode controls: `A = right/positive`, `D = left/negative`; steering smoothing is 90°/s when manual steering is OFF. CSV replay keeps CSV steering unless manual steering mode is explicitly enabled.
