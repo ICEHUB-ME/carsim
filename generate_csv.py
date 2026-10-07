@@ -85,7 +85,7 @@ NUM_LAPS = 3
 # Centerline of the track (x, y) in metres.  The loop is closed automatically
 # (last point connects back to the first).  Replace with your own polyline.
 TRACK = [
-    (0, 0), (60, 0), (120, 0), (165, 5), (200, 25), (210, 60),
+    (0, 0), (0,240), (120, 0), (165, 5), (200, 25), (210, 60),
     (195, 90), (160, 100), (125, 95), (100, 115), (95, 150),
     (75, 175), (40, 180), (10, 165), (-5, 135), (10, 105),
     (35, 85), (30, 55), (5, 30),
