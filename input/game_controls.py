@@ -173,6 +173,39 @@ class GameControls:
             self._ensure_valid_manual_field()
         return self.manual_steer_mode
 
+    def _append_manual_text(self, text: str) -> bool:
+        """Append one or more valid numeric characters to the edit buffer.
+
+        Decimal points are allowed exactly once. A minus sign is allowed only
+        for steering and only as the first character. This deliberately keeps
+        the buffer as text until Enter, so intermediate values such as ``12.``
+        and ``-.5`` are valid while typing.
+        """
+        if not text:
+            return False
+
+        changed = False
+        for char in text:
+            if char.isdigit():
+                self._manual_buffer += char
+                changed = True
+                continue
+
+            if char == ".":
+                if "." not in self._manual_buffer:
+                    # Permit a leading decimal point (e.g. .5).
+                    self._manual_buffer += char
+                    changed = True
+                continue
+
+            if char == "-" and self.manual_field == self._STEER_FIELD:
+                if not self._manual_buffer:
+                    self._manual_buffer = "-"
+                    changed = True
+                continue
+
+        return changed
+
     def handle_event(
         self,
         event,
@@ -180,9 +213,10 @@ class GameControls:
         current_brake: float | None = None,
         current_steering: float | None = None,
     ) -> bool:
-        """Handle manual-mode toggles and text-entry keys.
+        """Handle manual-mode toggles and floating-point text entry.
 
-        Returns True when either manual mode is toggled.
+        Returns True when either manual mode is toggled. Manual numeric input
+        stays as text until Enter, then is converted with ``float()``.
         """
         import pygame
 
@@ -216,30 +250,37 @@ class GameControls:
             self._apply_manual_buffer()
             return False
 
-        digit_map = {
-            pygame.K_0: "0", pygame.K_1: "1", pygame.K_2: "2",
-            pygame.K_3: "3", pygame.K_4: "4", pygame.K_5: "5",
-            pygame.K_6: "6", pygame.K_7: "7", pygame.K_8: "8",
-            pygame.K_9: "9",
-        }
-        digit = digit_map.get(event.key)
-        if digit is not None:
-            max_length = 4 if self.manual_field == "steering" else 3
-            if len(self._manual_buffer) < max_length:
-                self._manual_buffer += digit
+        # Prefer event.unicode so the parser naturally supports number-row
+        # digits, keypad digits, decimal points, and a minus sign. This also
+        # avoids maintaining a separate integer-only key map.
+        text = getattr(event, "unicode", "") or ""
+        if self._append_manual_text(text):
+            return False
+
+        # Some pygame configurations provide an empty unicode value for the
+        # keypad decimal/minus keys. Handle those explicitly as a fallback.
+        decimal_keys = tuple(
+            key
+            for key in (
+                getattr(pygame, "K_PERIOD", None),
+                getattr(pygame, "K_KP_PERIOD", None),
+            )
+            if key is not None
+        )
+        if event.key in decimal_keys:
+            self._append_manual_text(".")
             return False
 
         minus_keys = tuple(
-            key for key in (
+            key
+            for key in (
                 getattr(pygame, "K_MINUS", None),
                 getattr(pygame, "K_KP_MINUS", None),
             )
             if key is not None
         )
-        if self.manual_field == "steering" and event.key in minus_keys:
-            if not self._manual_buffer:
-                self._manual_buffer = "-"
-            return False
+        if event.key in minus_keys and self.manual_field == self._STEER_FIELD:
+            self._append_manual_text("-")
 
         return False
 

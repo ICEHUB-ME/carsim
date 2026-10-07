@@ -81,8 +81,8 @@ class HUD:
         self._text(panel, f"MANUAL PEDALS: {pedal_mode}", 12, 8, self.small, pedal_color)
         self._text(panel, f"MANUAL STEER:  {steer_mode}", 215, 8, self.small, steer_color)
 
-        throttle = f"Throttle: {controls.manual_throttle * 100:3.0f}%"
-        brake = f"Brake:    {controls.manual_brake * 100:3.0f}%"
+        throttle = f"Throttle: {controls.manual_throttle * 100:6.2f}%"
+        brake = f"Brake:    {controls.manual_brake * 100:6.2f}%"
         steering = f"Steer:   {controls.manual_steering_angle_deg:+5.1f} deg"
         selected = controls.manual_field.upper()
         buffer = controls.manual_buffer or "_"
