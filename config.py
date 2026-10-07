@@ -50,4 +50,4 @@ class GameParams:
     steering_rate_deg: float = 90.0     # degrees / s
     path_max_points: int = 10_000
     physics_accumulator_limit: float = 0.25
-    pixels_per_meter: float = 7.5
+    pixels_per_meter: float = 10.0
