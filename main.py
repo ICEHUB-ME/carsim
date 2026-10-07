@@ -12,6 +12,7 @@ def main() -> None:
     game = subparsers.add_parser("game", help="Run interactive pygame driving")
     game.add_argument("--width", type=int, default=1200)
     game.add_argument("--height", type=int, default=800)
+    game.add_argument("-o", "--output", default="game_simulation_output.csv", help="Recorded game CSV output")
 
     sim = subparsers.add_parser("sim", help="Run CSV simulation as an automatic pygame replay")
     sim.add_argument("csv", help="Driver input CSV")
@@ -23,7 +24,7 @@ def main() -> None:
 
     if args.mode == "game":
         from visual.pygame_renderer import run_game
-        run_game(width=args.width, height=args.height)
+        run_game(width=args.width, height=args.height, output_path=args.output)
     else:
         from visual.pygame_renderer import run_csv_replay
         run_csv_replay(

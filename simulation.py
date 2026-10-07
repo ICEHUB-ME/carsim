@@ -1,4 +1,4 @@
-"""Fixed-step CSV simulation and replay-friendly state iterator."""
+"""Fixed-step CSV simulation and replay-friendly state/input iterators."""
 
 from __future__ import annotations
 
@@ -8,32 +8,12 @@ from typing import Iterator
 
 import numpy as np
 
-from car import Car, CarState, DriverInputs
+from car import Car, DriverInputs
 from config import CarParams
 from input.csv_loader import DriverInputSeries, load_driver_csv
 from input.interpolation import interpolate_columns, make_time_grid
 
-OUTPUT_FIELDS = (
-    "time",
-    "x",
-    "y",
-    "heading",
-    "speed",
-    "acceleration",
-    "lateral_velocity",
-    "lateral_acceleration",
-    "slip_angle",
-    "steering_angle",
-    "throttle",
-    "brake_pedal",
-    "brake_pressure_front",
-    "brake_pressure_rear",
-    "propulsion_force",
-    "drag_force",
-    "rolling_resistance",
-    "braking_force",
-    "lateral_force",
-)
+from csv_output import OUTPUT_FIELDS, rows_to_columns, save_simulation_csv
 
 
 @dataclass
@@ -63,7 +43,9 @@ class SimulationResult:
         return dict(self.data)
 
 
-def _resample_inputs(inputs: DriverInputSeries, sim_dt: float) -> tuple[np.ndarray, dict[str, np.ndarray]]:
+def _resample_inputs(
+    inputs: DriverInputSeries, sim_dt: float
+) -> tuple[np.ndarray, dict[str, np.ndarray]]:
     # The simulator always starts from the standard t=0 initial condition.
     target_time = make_time_grid(0.0, float(inputs.time[-1]), sim_dt)
     columns = interpolate_columns(
@@ -91,24 +73,44 @@ def _driver_at(u: dict[str, np.ndarray], index: int) -> DriverInputs:
     )
 
 
+def iter_simulation_inputs(
+    inputs: DriverInputSeries,
+    params: CarParams | None = None,
+) -> Iterator[tuple[float, DriverInputs]]:
+    """Yield the exact fixed-step CSV input timeline used by the simulator.
+
+    The first yield is the t=0 initial state with zero driver input. Each next
+    yield supplies the direct, interpolated input for the preceding simulation
+    interval. This iterator is useful for deterministic pygame replay where
+    each frame must be advanced explicitly.
+    """
+    p = params or CarParams()
+    times, u = _resample_inputs(inputs, p.sim_dt)
+
+    yield float(times[0]), DriverInputs()
+    for i in range(len(times) - 1):
+        yield float(times[i + 1]), _driver_at(u, i)
+
+
 def iter_simulation_states(
     inputs: DriverInputSeries,
     params: CarParams | None = None,
 ) -> Iterator[tuple[float, Car]]:
     """Yield the live Car object at every interpolated simulation timestep.
 
-    This is the common fixed-step path used by CSV headless simulation and the
-    pygame replay mode. CSV values are applied directly and never passed
-    through GameControls smoothing.
+    CSV values are applied directly and never passed through GameControls
+    smoothing. The same fixed-step physics path is used by headless simulation.
     """
     p = params or CarParams()
-    times, u = _resample_inputs(inputs, p.sim_dt)
     car = Car(p)
+    timeline = iter_simulation_inputs(inputs, params=p)
 
-    yield float(times[0]), car
-    for i in range(len(times) - 1):
-        car.step(float(times[i + 1] - times[i]), _driver_at(u, i))
-        yield float(times[i + 1]), car
+    first_time, _ = next(timeline)
+    yield first_time, car
+
+    for time_value, driver_inputs in timeline:
+        car.step(time_value - car.state.time, driver_inputs)
+        yield time_value, car
 
 
 def simulate_driver_inputs(
@@ -116,14 +118,15 @@ def simulate_driver_inputs(
     params: CarParams | None = None,
 ) -> SimulationResult:
     p = params or CarParams()
-    rows: dict[str, list[float]] = {field: [] for field in OUTPUT_FIELDS}
+    rows: list[dict[str, float]] = []
 
-    for _, car in iter_simulation_states(inputs, params=p):
+    for time_value, car in iter_simulation_states(inputs, params=p):
         snapshot = car.state.as_dict()
-        for field in OUTPUT_FIELDS:
-            rows[field].append(float(snapshot[field]))
+        # Preserve the exact replay timeline, including a final partial timestep.
+        snapshot["time"] = time_value
+        rows.append({field: float(snapshot[field]) for field in OUTPUT_FIELDS})
 
-    return SimulationResult({field: np.asarray(values, dtype=float) for field, values in rows.items()})
+    return SimulationResult(rows_to_columns(rows))
 
 
 def simulate_csv(
@@ -136,16 +139,3 @@ def simulate_csv(
     save_simulation_csv(result, output_path)
     return result
 
-
-def save_simulation_csv(result: SimulationResult, output_path: str | Path) -> None:
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    matrix = np.column_stack([result.data[field] for field in OUTPUT_FIELDS])
-    np.savetxt(
-        output_path,
-        matrix,
-        delimiter=",",
-        header=",".join(OUTPUT_FIELDS),
-        comments="",
-        fmt="%.10g",
-    )

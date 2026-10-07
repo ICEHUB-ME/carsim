@@ -143,15 +143,20 @@ Controls:
 - `W` — smoothly increase throttle toward 100%
 - `S` — smoothly increase brake pedal travel and both brake pressures toward 100%
 - `SPACE` — same brake action as `S`
-- `A` — smoothly steer left toward -30°
-- `D` — smoothly steer right toward +30°
-- `A` — smoothly steer toward `-30°`
-- `D` — smoothly steer toward `+30°`
-- neutral steering — smoothly return toward `0°`
+- `A` — smoothly steer **right** toward `+30°`
+- `D` — smoothly steer **left** toward `-30°`
 - releasing `W` smoothly returns throttle toward 0
 - releasing `S`/`SPACE` smoothly returns brake pedal travel and brake pressures toward 0
 - releasing `A`/`D` smoothly returns steering toward 0°
+- `T` — toggle real-time animation / frame-step mode
+- `F` — when frame-step mode is active, advance **exactly one physics frame** (`0.01 s`)
+- `M` — toggle manual throttle/brake override
+- `TAB` — select manual throttle or brake field
+- `0-9` — type a manual percentage; `ENTER` applies it (0-100%)
+- `BACKSPACE` — erase the current manual percentage entry
 - `ESC` — quit
+
+Manual pedal entry is direct and does not use smoothing. In game mode, W/S are ignored while manual mode is active. In CSV replay, M enables a manual override for only throttle/brake; steering remains controlled by the CSV.
 
 Input smoothing rates are:
 
@@ -161,11 +166,13 @@ Input smoothing rates are:
 
 Physics remains fixed at `0.01 s` per update even though rendering runs independently.
 
-## Run CSV simulation
+## Run CSV simulation / replay
 
 ```bash
 python main.py sim examples/straight_acceleration.csv
 ```
+
+CSV mode opens the pygame window and automatically replays the interpolated 100 Hz timeline. Player driving keys (`W/S/A/D/SPACE`) are ignored. `T` pauses/resumes frame-step mode, `F` advances one physics frame at a time, and `M` enables a manual throttle/brake override.
 
 or:
 
@@ -232,7 +239,7 @@ Run:
 python -m unittest discover -s tests
 ```
 
-The tests cover the reference torque model, back-EMF model, brake mapping, lateral grip limit, forward-only braking, and 100 Hz CSV interpolation.
+The tests cover the reference torque model, back-EMF model, brake mapping, lateral grip limit, forward-only braking, 100 Hz CSV interpolation, game-input smoothing, steering direction, manual pedal entry, and replay/headless consistency.
 
 ## Extension points
 
@@ -247,3 +254,74 @@ The current design makes later upgrades localized. Examples include:
 - regenerative braking
 - reverse
 - richer track/world rendering
+
+## CSV replay mode
+
+The `sim` mode now opens pygame and replays the CSV automatically through the
+same `Car` physics, bird's-eye renderer, HUD, and pedal widgets used by game mode.
+CSV inputs are interpolated to the fixed 0.01 s simulation grid and applied
+directly; `GameControls` is not constructed, so W/S/A/D/Space do nothing.
+
+```bash
+python main.py sim examples/braking_turn.csv
+```
+
+Optional replay window size and output path:
+
+```bash
+python main.py sim examples/braking_turn.csv --width 1400 --height 900 -o replay_output.csv
+```
+
+During replay, ESC or closing the window stops playback. The output CSV contains
+the states rendered up to that point.
+
+## Game-mode CSV recording
+
+Game mode records the initial state and every physics timestep to a CSV file using the same 19-column schema as CSV simulation/replay mode.
+
+```bash
+python main.py game -o game_simulation_output.csv
+```
+
+The default output file is `game_simulation_output.csv`. The `-o/--output` option can be used to choose another path.
+
+The recorded `throttle` and `brake_pedal` columns remain normalized to `[0, 1]`, matching the existing CSV simulation format; the HUD displays them as percentages.
+
+## Project layout and `csv_output.py` location
+
+`csv_output.py` belongs **at the project root**, alongside `main.py`, `simulation.py`, `car.py`, and `config.py`:
+
+```text
+car_physics_simulator/
+├── main.py
+├── run_sim.py
+├── car.py
+├── config.py
+├── simulation.py
+├── csv_output.py          # shared CSV output module
+├── physics/
+├── input/
+├── visual/
+├── examples/
+└── tests/
+```
+
+### Import rule
+
+This project is designed to be launched with script-style commands such as:
+
+```bash
+python main.py game
+python main.py sim examples/braking_turn.csv
+python run_sim.py examples/braking_turn.csv
+```
+
+For that reason, project modules use the root-level absolute import:
+
+```python
+from csv_output import OUTPUT_FIELDS, rows_to_columns, save_simulation_csv
+```
+
+Do **not** change this to `from .csv_output import ...` unless the entire project is converted to a package and launched with `python -m ...`. Using a leading-dot relative import while running `main.py` directly causes `ImportError: attempted relative import with no known parent package`.
+
+Both game mode and CSV simulation/replay use the same `csv_output.py` functions, so there is only one CSV output implementation to maintain.
