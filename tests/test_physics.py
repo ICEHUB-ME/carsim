@@ -79,6 +79,72 @@ class PhysicsTests(unittest.TestCase):
         finally:
             output.unlink(missing_ok=True)
 
+def test_game_output_csv_columns_are_accepted(self):
+    output = ROOT / "tests" / "_game_output.csv"
+    input_csv = ROOT / "tests" / "_game_input.csv"
+
+    input_csv.write_text(
+        "\n".join(
+            [
+                "time,x,y,speed,throttle,brake_pedal,"
+                "brake_pressure_front,brake_pressure_rear,"
+                "steering_angle,random_column",
+                "0.0,0,0,0,0,0,0,0,0,hello",
+                "0.01,1,2,3,0.5,0.25,0.8,0.7,5,world",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        result = simulate_csv(input_csv, output)
+
+        self.assertEqual(len(result.time), 2)
+
+        self.assertTrue(
+            np.isclose(result["throttle"][1], 0.5)
+        )
+
+        self.assertTrue(
+            np.isclose(result["brake_pedal"][1], 0.25)
+        )
+
+        self.assertTrue(
+            np.isclose(result["brake_pressure_front"][1], 0.8)
+        )
+
+        self.assertTrue(
+            np.isclose(result["brake_pressure_rear"][1], 0.7)
+        )
+
+        self.assertTrue(
+            np.isclose(result["steering_angle"][1], 5.0)
+        )
+
+    finally:
+        input_csv.unlink(missing_ok=True)
+        output.unlink(missing_ok=True)
+
+def test_missing_driver_input_column_raises(self):
+    input_csv = ROOT / "tests" / "_invalid_input.csv"
+
+    input_csv.write_text(
+        "time,throttle,steering_angle\n"
+        "0.0,0.0,0.0\n"
+        "0.01,1.0,5.0\n",
+        encoding="utf-8",
+    )
+
+    try:
+        with self.assertRaisesRegex(
+            ValueError,
+            "missing required driver-input columns",
+        ):
+            from input.csv_loader import load_driver_csv
+
+            load_driver_csv(input_csv)
+    finally:
+        input_csv.unlink(missing_ok=True)
 
 if __name__ == "__main__":
     unittest.main()
