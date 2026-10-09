@@ -222,12 +222,13 @@ def load_driver_csv(path: str | Path) -> DriverInputSeries:
 
     if np.any(np.diff(time) <= 0):
         raise ValueError(
-            "time must be strictly increasing"
+            "time must be strictly increasing; sort rows and remove "
+            "duplicate timestamps"
         )
 
     if time[0] < 0:
         raise ValueError(
-            "time cannot be negative"
+            "time cannot be negative; start the CSV timeline at zero or later"
         )
 
     # Driver inputs are normalized to the ranges expected by Car.step().
@@ -256,7 +257,6 @@ def load_driver_csv(path: str | Path) -> DriverInputSeries:
     )
 
     steer_angle_deg = arrays["steer_angle_deg"]
-
     return DriverInputSeries(
         time=time,
         throttle=throttle,

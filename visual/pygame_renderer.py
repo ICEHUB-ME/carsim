@@ -4,13 +4,11 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
 
-import numpy as np
 import pygame
 
 from car import Car, DriverInputs
-from config import CarParams, GameParams
+from config import CarParameters, GameConfig
 from csv_output import OUTPUT_FIELDS, rows_to_columns, save_simulation_csv
 from input.csv_loader import load_driver_csv
 from input.game_controls import GameControls
@@ -42,12 +40,13 @@ class PlaybackControls:
         return True
 
 
-def _create_renderer(width: int, height: int, game_params: GameParams):
+def _create_renderer(width: int, height: int, game_params: GameConfig):
     birds_eye = BirdsEyeRenderer(
         width,
         height,
-        pixels_per_meter=game_params.pixels_per_meter,
-        max_path_points=game_params.path_max_points,
+        pixels_per_meter=game_params.plot.pixels_per_meter,
+        max_path_points=game_params.plot.path_max_points,
+        grid_spacing_m=game_params.plot.grid_spacing_m,
     )
     return birds_eye, HUD()
 
@@ -87,7 +86,10 @@ def _game_driver_inputs(controls: GameControls) -> DriverInputs:
     )
 
 
-def _manual_override_inputs(csv_inputs: DriverInputs, controls: GameControls) -> DriverInputs:
+def _manual_override_inputs(
+    csv_inputs: DriverInputs,
+    controls: GameControls,
+) -> DriverInputs:
     """Override only the CSV fields whose manual modes are enabled."""
     overrides: dict[str, float] = {}
 
@@ -139,13 +141,13 @@ def run_game(
     pygame.display.set_caption("Unified Car Physics Simulator — Game")
     clock = pygame.time.Clock()
 
-    params = CarParams()
-    game_params = GameParams()
+    params = CarParameters()
+    game_params = GameConfig()
     car = Car(params)
     controls = GameControls(
-        throttle_rate=game_params.throttle_rate,
-        brake_rate=game_params.brake_rate,
-        steering_rate_deg=game_params.steering_rate_deg,
+        throttle_rate=game_params.controls.throttle_rate,
+        brake_rate=game_params.controls.brake_rate,
+        steering_rate_deg=game_params.controls.steering_rate_deg,
         max_steering_angle_deg=params.max_steering_angle_deg,
     )
     playback = PlaybackControls()
@@ -162,7 +164,7 @@ def run_game(
         while running:
             frame_dt = min(
                 clock.tick(120) / 1000.0,
-                game_params.physics_accumulator_limit,
+                game_params.simulation.accumulator_limit,
             )
 
             for event in pygame.event.get():
@@ -229,6 +231,7 @@ def run_csv_replay(
     output_path: str | Path = "simulation_output.csv",
     width: int = 1200,
     height: int = 800,
+    initial_heading_rad: float = 0.0,
 ) -> SimulationResult:
     """Replay a CSV simulation inside pygame with optional frame-step/manual pedals.
 
@@ -238,8 +241,8 @@ def run_csv_replay(
     manual throttle/brake override.
     """
     csv_series = load_driver_csv(csv_path)
-    params = CarParams()
-    game_params = GameParams()
+    params = CarParameters()
+    game_params = GameConfig()
     timeline = list(iter_simulation_inputs(csv_series, params=params))
     if not timeline:
         raise ValueError("CSV input contains no simulation timesteps")
@@ -252,12 +255,12 @@ def run_csv_replay(
     birds_eye, hud = _create_renderer(width, height, game_params)
     playback = PlaybackControls()
     controls = GameControls(
-        throttle_rate=game_params.throttle_rate,
-        brake_rate=game_params.brake_rate,
-        steering_rate_deg=game_params.steering_rate_deg,
+        throttle_rate=game_params.controls.throttle_rate,
+        brake_rate=game_params.controls.brake_rate,
+        steering_rate_deg=game_params.controls.steering_rate_deg,
         max_steering_angle_deg=params.max_steering_angle_deg,
     )
-    car = Car(params)
+    car = Car(params, initial_heading_rad=initial_heading_rad)
     rows = _new_output_rows()
 
     running = True
@@ -291,7 +294,7 @@ def run_csv_replay(
                     running = False
                 else:
                     playback.handle_event(event)
-                    # M/K manual overrides are allowed in replay. W/S/A/D/Space remain ignored.
+                    # Replay accepts manual input fields while preserving CSV playback.
                     controls.handle_event(
                         event,
                         current_throttle=current_csv_driver.throttle,
@@ -327,7 +330,10 @@ def run_csv_replay(
                     for event in pygame.event.get():
                         if event.type == pygame.QUIT:
                             running = False
-                        elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                        elif (
+                            event.type == pygame.KEYDOWN
+                            and event.key == pygame.K_ESCAPE
+                        ):
                             running = False
                     _draw_frame(
                         screen,

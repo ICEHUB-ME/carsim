@@ -44,7 +44,11 @@ def write_csv_columns(
     if len(lengths) != 1:
         raise ValueError("All CSV output columns must have the same length")
 
-    matrix = np.column_stack(arrays) if arrays[0].size else np.empty((0, len(OUTPUT_FIELDS)))
+    matrix = (
+        np.column_stack(arrays)
+        if arrays[0].size
+        else np.empty((0, len(OUTPUT_FIELDS)))
+    )
     np.savetxt(
         output_path,
         matrix,

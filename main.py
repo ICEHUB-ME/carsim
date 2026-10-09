@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 
 
 def main() -> None:
@@ -67,6 +68,13 @@ def main() -> None:
         default=800,
     )
 
+    sim.add_argument(
+        "--initial-heading-deg",
+        type=float,
+        default=0.0,
+        help="Initial vehicle heading in degrees",
+    )
+
     args = parser.parse_args()
 
     if args.mode == "game":
@@ -86,6 +94,7 @@ def main() -> None:
             args.output,
             width=args.width,
             height=args.height,
+            initial_heading_rad=math.radians(args.initial_heading_deg),
         )
 
 

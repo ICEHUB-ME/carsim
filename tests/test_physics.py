@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import math
 import sys
 import unittest
@@ -12,6 +13,7 @@ sys.path.insert(0, str(ROOT))
 
 from car import Car, DriverInputs
 from config import CarParams
+from generate_csv import load_track_csv, write_csv as write_driver_csv
 from physics.braking import braking_force
 from physics.motor import propulsion_force
 from physics.throttle import diagnostic_acceleration
@@ -45,6 +47,13 @@ class PhysicsTests(unittest.TestCase):
         car.step(0.01, DriverInputs(throttle=1.0, steering_angle_deg=30.0))
         self.assertLessEqual(abs(car.state.lateral_force), p.max_grip + 1e-9)
 
+    def test_initial_heading_survives_reset(self):
+        heading = math.pi / 2
+        car = Car(CarParams(), initial_heading_rad=heading)
+        self.assertAlmostEqual(car.state.heading, heading)
+        car.reset()
+        self.assertAlmostEqual(car.state.heading, heading)
+
     def test_forward_only_braking(self):
         p = CarParams()
         car = Car(p)
@@ -61,6 +70,36 @@ class PhysicsTests(unittest.TestCase):
         self.assertGreaterEqual(car.state.speed, 0.0)
         self.assertTrue(np.isfinite(car.state.speed))
 
+    def test_track_csv_loader_accepts_ordered_two_column_points(self):
+        track_file = ROOT / "tests" / "_track_points.csv"
+        points = [(0.0, 0.0), (0.0, 10.0), (10.0, 10.0), (10.0, 0.0)]
+        try:
+            track_file.write_text(
+                "\n".join(f"{x},{y}" for x, y in points),
+                encoding="utf-8",
+            )
+            self.assertEqual(load_track_csv(track_file), points)
+        finally:
+            track_file.unlink(missing_ok=True)
+    def test_track_generator_keeps_existing_csv_columns(self):
+        output = ROOT / "tests" / "_track_controls.csv"
+        try:
+            write_driver_csv([(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)], output)
+            with output.open(newline="", encoding="utf-8") as handle:
+                header = next(csv.reader(handle))
+            self.assertEqual(
+                header,
+                [
+                    "time",
+                    "throttle",
+                    "brakePressureFront",
+                    "brakePressureRear",
+                    "brakePedalTravel",
+                    "steerAngle",
+                ],
+            )
+        finally:
+            output.unlink(missing_ok=True)
     def test_csv_resampling_produces_100_hz_grid(self):
         output = ROOT / "tests" / "_output.csv"
         try:

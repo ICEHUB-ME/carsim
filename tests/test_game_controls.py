@@ -64,10 +64,10 @@ class GameControlTests(unittest.TestCase):
     def test_steering_direction(self):
         controls = GameControls(2.0, 2.0, 90.0, 30.0)
         state = controls.update(1.0, _FakeKeys({FAKE_PYGAME.K_a}))
-        self.assertAlmostEqual(state.steering_angle_deg, -30.0)
+        self.assertAlmostEqual(state.steering_angle_deg, 30.0)
 
         state = controls.update(1.0, _FakeKeys({FAKE_PYGAME.K_d}))
-        self.assertAlmostEqual(state.steering_angle_deg, 30.0)
+        self.assertAlmostEqual(state.steering_angle_deg, -30.0)
 
         state = controls.update(1.0, _FakeKeys(set()))
         self.assertAlmostEqual(state.steering_angle_deg, 0.0)

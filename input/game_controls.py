@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+MAX_MANUAL_PERCENT = 100.0
+
 
 def approach(current: float, target: float, max_delta: float) -> float:
     """Move current toward target by at most max_delta."""
@@ -101,7 +103,11 @@ class GameControls:
     def _manual_percent(self) -> float:
         if not self._manual_buffer:
             return 0.0
-        return max(0.0, min(100.0, float(self._manual_buffer))) / 100.0
+        percent = max(
+            0.0,
+            min(MAX_MANUAL_PERCENT, float(self._manual_buffer)),
+        )
+        return percent / MAX_MANUAL_PERCENT
 
     def _manual_steering_degrees(self) -> float:
         if not self._manual_buffer or self._manual_buffer == "-":
@@ -146,8 +152,16 @@ class GameControls:
         self.manual_mode = not self.manual_mode
         self._manual_buffer = ""
         if self.manual_mode:
-            throttle = self.state.throttle if current_throttle is None else current_throttle
-            brake = self.state.brake_pedal_travel if current_brake is None else current_brake
+            throttle = (
+                self.state.throttle
+                if current_throttle is None
+                else current_throttle
+            )
+            brake = (
+                self.state.brake_pedal_travel
+                if current_brake is None
+                else current_brake
+            )
             self.set_manual_values(throttle, brake)
             if self.manual_field not in self._active_manual_fields():
                 self.manual_field = "throttle"
@@ -237,7 +251,11 @@ class GameControls:
         if event.key == pygame.K_TAB:
             active = self._active_manual_fields()
             if active:
-                current_index = active.index(self.manual_field) if self.manual_field in active else -1
+                current_index = (
+                    active.index(self.manual_field)
+                    if self.manual_field in active
+                    else -1
+                )
                 self.manual_field = active[(current_index + 1) % len(active)]
                 self._manual_buffer = ""
             return False
@@ -296,50 +314,55 @@ class GameControls:
             return None
         return self.manual_steering_angle_deg
 
-    def update(self, dt: float, keys) -> GameControlState:
+    def _update_pedals(self, dt: float, keys) -> None:
+        """Apply either direct manual pedals or smoothed keyboard targets."""
         import pygame
 
-        if dt < 0:
-            raise ValueError("dt must be non-negative")
-
-        # Pedal inputs are direct while manual mode is active.
         if self.manual_mode:
             self.state.throttle = self.manual_throttle
             self.state.brake_pedal_travel = self.manual_brake
             self.state.brake_pressure_front = self.manual_brake
             self.state.brake_pressure_rear = self.manual_brake
-        else:
-            # W controls throttle. Releasing W smoothly returns throttle to zero.
-            throttle_target = 1.0 if keys[pygame.K_w] else 0.0
-            brake_target = 1.0 if (keys[pygame.K_s] or keys[pygame.K_SPACE]) else 0.0
+            return
 
-            self.state.throttle = approach(
-                self.state.throttle, throttle_target, self.throttle_rate * dt
-            )
-            self.state.brake_pedal_travel = approach(
-                self.state.brake_pedal_travel, brake_target, self.brake_rate * dt
-            )
-            self.state.brake_pressure_front = approach(
-                self.state.brake_pressure_front, brake_target, self.brake_rate * dt
-            )
-            self.state.brake_pressure_rear = approach(
-                self.state.brake_pressure_rear, brake_target, self.brake_rate * dt
-            )
+        throttle_target = 1.0 if keys[pygame.K_w] else 0.0
+        brake_target = 1.0 if (keys[pygame.K_s] or keys[pygame.K_SPACE]) else 0.0
+        self.state.throttle = approach(
+            self.state.throttle, throttle_target, self.throttle_rate * dt
+        )
+        self.state.brake_pedal_travel = approach(
+            self.state.brake_pedal_travel, brake_target, self.brake_rate * dt
+        )
+        self.state.brake_pressure_front = approach(
+            self.state.brake_pressure_front, brake_target, self.brake_rate * dt
+        )
+        self.state.brake_pressure_rear = approach(
+            self.state.brake_pressure_rear, brake_target, self.brake_rate * dt
+        )
 
-        # Manual steering is direct. Otherwise A=RIGHT/positive and D=LEFT/negative.
+    def _update_steering(self, dt: float, keys) -> None:
+        """Apply a direct manual angle or the smoothed keyboard target."""
+        import pygame
+
         if self.manual_steer_mode:
             self.state.steering_angle_deg = self.manual_steering_angle_deg
-        else:
-            steer_target = 0.0
-            if keys[pygame.K_a] and not keys[pygame.K_d]:
-                steer_target = self.max_steering_angle_deg
-            elif keys[pygame.K_d] and not keys[pygame.K_a]:
-                steer_target = -self.max_steering_angle_deg
+            return
 
-            self.state.steering_angle_deg = approach(
-                self.state.steering_angle_deg,
-                steer_target,
-                self.steering_rate_deg * dt,
-            )
+        steer_target = 0.0
+        if keys[pygame.K_a] and not keys[pygame.K_d]:
+            steer_target = self.max_steering_angle_deg
+        elif keys[pygame.K_d] and not keys[pygame.K_a]:
+            steer_target = -self.max_steering_angle_deg
+        self.state.steering_angle_deg = approach(
+            self.state.steering_angle_deg,
+            steer_target,
+            self.steering_rate_deg * dt,
+        )
 
+    def update(self, dt: float, keys) -> GameControlState:
+        """Advance the smoothed driver controls by one elapsed-time interval."""
+        if dt < 0:
+            raise ValueError("dt must be non-negative")
+        self._update_pedals(dt, keys)
+        self._update_steering(dt, keys)
         return self.state

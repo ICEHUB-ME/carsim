@@ -1,335 +1,214 @@
-# Unified Car Physics Simulator
+# Car Physics Simulator
 
-A modular, forward-only Python car simulator with two modes:
+A forward-only Python vehicle simulator with an interactive driving mode and a CSV-driven simulation mode. Both modes use the same `Car.step()` physics update.
 
-1. **Game mode (`pygame`)** — fixed-step physics at 100 Hz, smooth keyboard controls, bird's-eye view, travelled path, and HUD.
-2. **Simulation mode (CSV)** — interpolates driver inputs onto the same 0.01 s grid and writes a complete physics time series to `simulation_output.csv`.
+## Features
 
-## Finalized model
+- Fixed-step physics at 0.01 seconds (100 Hz) by default
+- Pygame top-down view, distance grid, and HUD
+- CSV control replay and simulation result recording
+- `generate_csv.py` creates throttle, brake, and steering inputs for a waypoint track
+- Vehicle, control, simulation, and rendering settings are defined with dataclasses in `config.py`
 
-### Main propulsion
-The **back-EMF propulsion model** is the production model:
+## Setup
 
-`propulsionForce = maxPropulsionForce * throttle * max(0, 1 - speed / vmax)`
-
-with `maxPropulsionForce = 2000 N` and `vmax = 27 m/s`.
-
-### Part 1 diagnostic model
-The torque model is retained only for reference:
-
-`commandTorque = throttle * maxMotorTorque`
-
-`wheelForce = commandTorque * gearRatio / wheelRadius`
-
-`acceleration = wheelForce / mass`
-
-Defaults: `180 Nm`, `3:1`, `0.216 m`, `300 kg`.
-
-### Lateral dynamics
-
-`slipAngle = steerAngle(rad) - lateralVelocity / max(abs(speed), epsilon)`
-
-`lateralForce = clamp(corneringStiffness * slipAngle, -maxGrip, +maxGrip)`
-
-`lateralAcceleration = lateralForce / mass`
-
-`lateralVelocity += lateralAcceleration * dt`
-
-`maxGrip = frictionCoefficient * normalForce`
-
-with `normalForce = mass * 9.81` and `frictionCoefficient = 1.0`.
-
-### Longitudinal resistance
-
-`drag = 0.5 * area * dragCoefficient * airDensity * speed^2`
-
-`rollingResistance = rollingResistanceCoefficient * normalForce` while moving.
-
-Net longitudinal force is:
-
-`propulsion - drag - rollingResistance - braking`
-
-### Braking
-
-`frontBrake = brakePressureFront * brakePedalTravel`
-
-`rearBrake = brakePressureRear * brakePedalTravel`
-
-`rawBrakingForce = maxBrakingCapacity * (0.7 * frontBrake + 0.3 * rearBrake)`
-
-`brakingForce = min(rawBrakingForce, frictionCoefficient * normalForce)`
-
-All three brake inputs are normalized to `[0, 1]`.
-
-### Heading / position
-
-The selected simple yaw model is used:
-
-`x += forwardVelocity * cos(heading) * dt`
-
-`y += forwardVelocity * sin(heading) * dt`
-
-`yawRate = lateralVelocity / max(forwardVelocity, small_value)`
-
-`heading += yawRate * dt`
-
-No bicycle model, load transfer, aero downforce, reverse, or combined friction circle is implemented yet.
-
-## Architecture
-
-```text
-car_physics_simulator/
-├── main.py
-├── run_sim.py
-├── car.py
-├── config.py
-├── simulation.py
-├── matplotlib_animation_example.py
-├── physics/
-│   ├── throttle.py
-│   ├── motor.py
-│   ├── drag.py
-│   ├── traction.py
-│   ├── braking.py
-│   └── rolling_resistance.py
-├── input/
-│   ├── csv_loader.py
-│   ├── interpolation.py
-│   └── game_controls.py
-├── visual/
-│   ├── birds_eye.py
-│   ├── hud.py
-│   └── pygame_renderer.py
-├── examples/
-│   ├── straight_acceleration.csv
-│   ├── braking_turn.csv
-│   └── low_rate_input.csv
-└── tests/
-    └── test_physics.py
-```
-
-The important architectural rule is that **both modes use the same `Car.step()` implementation**. That prevents the interactive game and CSV simulation from developing two subtly different physics models.
-
-## Install
-
-```bash
-python -m venv .venv
-```
-
-Windows PowerShell:
+Create a virtual environment and install the dependencies from the project root:
 
 ```powershell
+python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
-macOS/Linux:
+## Running the simulator
 
-```bash
-source .venv/bin/activate
-pip install -r requirements.txt
-```
+### Interactive game mode
 
-## Run game mode
-
-From the project directory:
-
-```bash
+```powershell
 python main.py game
 ```
 
-Controls:
+- `W`: increase throttle
+- `S` / `SPACE`: apply the brakes
+- `A` / `D`: steer left / right
+- `T`: toggle real-time playback and frame-step mode
+- `F` while frame-stepping: advance one physics frame
+- `M`: toggle manual pedal input
+- `K`: toggle manual steering input
+- `ESC`: quit
 
-- `W` — smoothly increase throttle toward 100%
-- `S` — smoothly increase brake pedal travel and both brake pressures toward 100%
-- `SPACE` — same brake action as `S`
-- `A` — smoothly steer **right** toward `+30°`
-- `D` — smoothly steer **left** toward `-30°`
-- releasing `W` smoothly returns throttle toward 0
-- releasing `S`/`SPACE` smoothly returns brake pedal travel and brake pressures toward 0
-- releasing `A`/`D` smoothly returns steering toward 0°
-- `T` — toggle real-time animation / frame-step mode
-- `F` — when frame-step mode is active, advance **exactly one physics frame** (`0.01 s`)
-- `M` — toggle manual throttle/brake override
-- `TAB` — select manual throttle or brake field
-- `0-9` — type a manual percentage; `ENTER` applies it (0-100%)
-- `BACKSPACE` — erase the current manual percentage entry
-- `ESC` — quit
+Use `--width`, `--height`, and `-o` to set the window size and recording path.
 
-Manual pedal entry is direct and does not use smoothing. In game mode, W/S are ignored while manual mode is active. In CSV replay, M enables a manual override for only throttle/brake; steering remains controlled by the CSV.
+### Replay control inputs from CSV
 
-Input smoothing rates are:
-
-- throttle: `2.0 / s`
-- brake pedal and brake pressures: `2.0 / s`
-- steering: `90° / s`
-
-Physics remains fixed at `0.01 s` per update even though rendering runs independently.
-
-## Run CSV simulation / replay
-
-```bash
-python main.py sim examples/straight_acceleration.csv
+```powershell
+python main.py sim examples/braking_turn.csv
 ```
 
-CSV mode opens the pygame window and automatically replays the interpolated 100 Hz timeline. Player driving keys (`W/S/A/D/SPACE`) are ignored. `T` pauses/resumes frame-step mode, `F` advances one physics frame at a time, and `M` enables a manual throttle/brake override.
+Set the initial vehicle heading in degrees when the track does not begin along the positive X axis:
 
-or:
+```powershell
+python main.py sim examples/braking_turn.csv --initial-heading-deg 90
+```
 
-```bash
+To run a simulation without the Pygame replay window:
+
+```powershell
 python run_sim.py examples/braking_turn.csv -o simulation_output.csv
 ```
 
-The CSV input must contain:
+The input CSV must contain these columns. Steering is in degrees; pedal values are normalized to the range 0–1. Input samples are linearly interpolated onto the fixed simulation time step.
 
 ```text
 time,throttle,brakePressureFront,brakePressureRear,brakePedalTravel,steerAngle
 ```
 
-`steerAngle` is in degrees. The input series is linearly interpolated to the 100 Hz simulation grid.
+## Generating track-following inputs
 
-## Output arrays
+`generate_csv.py` turns an ordered list of track coordinates into driver control inputs:
 
-`simulate_csv()` returns a `SimulationResult` whose fields are NumPy arrays:
-
-```python
-result.time
-result.x
-result.y
-result["speed"]
-result["acceleration"]
-result["lateral_velocity"]
-result["lateral_acceleration"]
-result["slip_angle"]
-result["steering_angle"]
-result["throttle"]
-result["brake_pedal"]
-result["brake_pressure_front"]
-result["brake_pressure_rear"]
-result["propulsion_force"]
-result["drag_force"]
-result["rolling_resistance"]
-result["braking_force"]
-result["lateral_force"]
+```powershell
+python generate_csv.py
+python generate_csv.py my_track.csv
 ```
 
-`result.to_matplotlib_arrays()` returns the arrays in exactly the CSV output order, which makes it easy to adapt to a `matplotlib.animation.FuncAnimation` template.
+With no argument, the script uses the `TRACK` list in the file. A track CSV may provide `x,y` or `track_x,track_y` columns; otherwise its first two columns are treated as x and y. Coordinates are in meters, and row order defines the route order. The path is closed automatically by connecting the last point to the first. At least four distinct waypoints are required.
 
-A ready-to-run example is included as `matplotlib_animation_example.py`.
+Set the output path with `OUTPUT_FILE` and the number of laps with `NUM_LAPS` near the top of the script. The generator writes a six-column control-input CSV. This is a different schema from the 19-column simulation-state output.
 
-## CSV output
+After generation, the script prints the initial heading that aligns the simulated car with the first track segment. If the track does not start along +X, pass that angle when replaying the generated CSV. For example, if the reported initial heading is 90 degrees:
 
-`simulation_output.csv` contains:
+```powershell
+python main.py sim generate_natural_3laps.csv --initial-heading-deg 90
+```
+
+The input waypoints are smoothed by a periodic cubic spline. The resulting path passes smoothly near sharp corners rather than following each corner as a sharp polyline turn. `USE_RACING_LINE=False` by default, so the route is not offset from the supplied centerline.
+
+## How `generate_csv.py` calculates the controls
+
+The generator does not simply write the waypoint coordinates into a file. It builds a path and speed plan, drives the actual vehicle model in a feedback loop, and records the resulting controls.
+
+### 1. Convert the track into an evenly spaced path
+
+The ordered waypoints are connected, including the final-to-first segment. A periodic cubic spline is parameterized by distance between waypoints, sampled densely, and then resampled at roughly one-meter intervals along its arc length. The path distance `s` is therefore measured in meters.
+
+### 2. Estimate path heading and curvature
+
+The tangent direction `theta` is estimated from neighboring path points. The change in tangent direction divided by the distance gives an approximate curvature:
 
 ```text
-time, x, y, heading, speed, acceleration, lateral_velocity,
-lateral_acceleration, slip_angle, steering_angle, throttle,
-brake_pedal, brake_pressure_front, brake_pressure_rear,
-propulsion_force, drag_force, rolling_resistance, braking_force,
-lateral_force
+kappa ≈ Δtheta / Δs        [1/m]
 ```
 
-Angles in output are radians for `slip_angle` and `heading`, while `steering_angle` remains degrees. This matches the input convention and keeps the physical equations explicit.
+Positive curvature represents a left turn. Gaussian smoothing reduces noise from the discrete points. A forward window of about eight meters also considers the highest upcoming curvature, helping the speed plan account for a corner before the car reaches it.
 
-## Validation
+### 3. Plan a speed for every path point
 
-Run:
+The local speed limit is constrained by both the steering range and lateral acceleration:
 
-```bash
-python -m unittest discover -s tests
+```text
+v_steer = 0.80 × max_steering_angle_rad / |kappa|
+v_grip  = sqrt(7.0 m/s² / |kappa|)
+v_limit = min(v_steer, v_grip, 24.0 m/s)
 ```
 
-The tests cover the reference torque model, back-EMF model, brake mapping, lateral grip limit, forward-only braking, 100 Hz CSV interpolation, game-input smoothing, steering direction, manual pedal entry, and replay/headless consistency.
+Higher curvature therefore means a lower target speed. A small curvature floor avoids division by zero on straights.
 
-## Extension points
+The generator then makes repeated passes around the closed route. A backward pass limits speed so the car can brake before the next slower section:
 
-The current design makes later upgrades localized. Examples include:
-
-- combined longitudinal/lateral friction circle
-- front/rear tire loads and load transfer
-- wheel-speed state and individual tire slip
-- bicycle-model yaw dynamics
-- drivetrain gears and motor torque curves
-- ABS / brake bias control
-- regenerative braking
-- reverse
-- richer track/world rendering
-
-## CSV replay mode
-
-The `sim` mode now opens pygame and replays the CSV automatically through the
-same `Car` physics, bird's-eye renderer, HUD, and pedal widgets used by game mode.
-CSV inputs are interpolated to the fixed 0.01 s simulation grid and applied
-directly; `GameControls` is not constructed, so W/S/A/D/Space do nothing.
-
-```bash
-python main.py sim examples/braking_turn.csv
+```text
+v_here <= sqrt(v_next² + 2 × a_brake × Δs)
 ```
 
-Optional replay window size and output path:
+The planned braking deceleration is 3.8 m/s². A forward pass limits speed to what the motor can reach after drag and rolling resistance:
 
-```bash
-python main.py sim examples/braking_turn.csv --width 1400 --height 900 -o replay_output.csv
+```text
+a_available = 0.90 × (propulsion(1, v) - drag(v) - rolling_resistance(v)) / mass
+v_next <= sqrt(v_here² + 2 × a_available × Δs)
 ```
 
-During replay, ESC or closing the window stops playback. The output CSV contains
-the states rendered up to that point.
+Repeating these passes produces a speed profile that slows for corners and accelerates where the available distance and motor force permit.
 
-## Game-mode CSV recording
+### 4. Close the steering loop around the simulated car
 
-Game mode records the initial state and every physics timestep to a CSV file using the same 19-column schema as CSV simulation/replay mode.
+The generator creates a `Car` and advances it with `Car.step()` at every physics time step. It finds the nearest path point near the previous progress index, and searches the whole route again if the car is too far away. From that point it calculates the lateral offset and heading error.
 
-```bash
-python main.py game -o game_simulation_output.csv
+In this simulator's lateral model, steady-state yaw rate is approximately equal to the steering angle in radians. The feed-forward steering term is therefore:
+
+```text
+steer_ff = kappa_preview × speed       [rad]
 ```
 
-The default output file is `game_simulation_output.csv`. The `-o/--output` option can be used to choose another path.
+Feedback from heading error `e_psi` and lateral error `e_y` corrects the feed-forward command:
 
-The recorded `throttle` and `brake_pedal` columns remain normalized to `[0, 1]`, matching the existing CSV simulation format; the HUD displays them as percentages.
+```text
+u_fb = -(2 ζ ω × e_psi + (ω² / max(speed, 5)) × e_y) × speed_gain
+steer_command = degrees(steer_ff + u_fb)
+```
 
-## Project layout and `csv_output.py` location
+The defaults are `ω=0.8` and `ζ=0.9`. The command is reduced at low speed and constrained by the maximum steering angle and steering rate. Preview time accounts for lateral response delay and adds extra lead for earlier turn-in.
 
-`csv_output.py` belongs **at the project root**, alongside `main.py`, `simulation.py`, `car.py`, and `config.py`:
+### 5. Convert speed error into throttle or brake
+
+The controller looks slightly ahead along the speed plan. It combines the planned speed gradient with the difference between target and actual speed to calculate desired acceleration:
+
+```text
+a_des = speed × dv/ds + 1.5 × (v_ref - speed)
+```
+
+Desired acceleration is limited to -6 through 4 m/s². The requested net drive force includes the force needed to overcome drag and rolling resistance:
+
+```text
+F_net = mass × a_des + drag + rolling_resistance
+```
+
+For nonnegative `F_net`, throttle is estimated as the required force divided by the available full-throttle propulsion force at the current speed. Curvature-dependent throttle caps and floors adjust the driving style. For negative `F_net`, the generator uses bisection to find the brake input that produces the requested braking force under the same braking model as the simulator.
+
+Small brake requests are ignored so the car can coast. Separate brake engagement and release thresholds reduce rapid on/off changes. The controller also limits input rates and prevents throttle from remaining active while braking.
+
+### 6. Apply and record the controls
+
+Each calculated command is passed to `Car.step()`. The next control update uses the car's newly simulated position and speed, so steering and speed control respond to tracking errors instead of relying only on the precomputed plan. The generator records `time,throttle,brakePressureFront,brakePressureRear,brakePedalTravel,steerAngle` at the configured time step, defaulting to 0.01 seconds, until the requested lap distance is complete.
+
+## Physics model overview
+
+- Propulsion decreases as speed approaches the configured maximum speed (a back-EMF model).
+- Aerodynamic drag grows with the square of speed; rolling resistance depends on the configured coefficient and normal force.
+- Lateral tire force is computed from cornering stiffness and limited by maximum grip.
+- Braking force is calculated from brake commands and capped by maximum grip.
+- Position is advanced from heading and speed. Reverse, load transfer, and a combined friction circle are not currently modeled.
+
+Vehicle parameters are defined by `CarParameters` in `config.py`. Rendering scale and grid distance are available through `PlotConfig` / `GameConfig`; `pixels_per_meter` controls screen scale, while `grid_spacing_m` controls the real-world distance between grid lines.
+
+## Project layout
 
 ```text
 car_physics_simulator/
-├── main.py
-├── run_sim.py
-├── car.py
-├── config.py
-├── simulation.py
-├── csv_output.py          # shared CSV output module
-├── physics/
-├── input/
-├── visual/
-├── examples/
-└── tests/
+├── main.py                     # Game and Pygame replay entry point
+├── run_sim.py                  # Headless CSV simulation entry point
+├── generate_csv.py             # Track-to-control-input generator
+├── config.py                   # Dataclass configuration
+├── car.py                      # Car and compatibility input API
+├── simulation/
+│   ├── state.py                # Vehicle state and simulation result
+│   ├── step.py                 # One physics step
+│   └── simulate.py             # CSV-driven simulation
+├── physics/                    # Force, propulsion, and braking models
+├── input/                      # CSV loading, interpolation, game controls
+├── visual/                     # Top-down view, HUD, and Pygame rendering
+├── csv_output.py               # Existing 19-column simulation output
+├── examples/                   # Sample input CSV files
+└── tests/                      # Physics and control tests
 ```
 
-### Import rule
+Game and CSV simulation share the same vehicle-step implementation. Physics, input handling, and rendering have separate modules; `generate_csv.py` reuses the physics functions and vehicle step instead of implementing another vehicle model.
 
-This project is designed to be launched with script-style commands such as:
+## Tests
 
-```bash
-python main.py game
-python main.py sim examples/braking_turn.csv
-python run_sim.py examples/braking_turn.csv
+```powershell
+python -m unittest discover -s tests -v
 ```
 
-For that reason, project modules use the root-level absolute import:
+## CSV output formats
 
-```python
-from csv_output import OUTPUT_FIELDS, rows_to_columns, save_simulation_csv
-```
-
-Do **not** change this to `from .csv_output import ...` unless the entire project is converted to a package and launched with `python -m ...`. Using a leading-dot relative import while running `main.py` directly causes `ImportError: attempted relative import with no known parent package`.
-
-Both game mode and CSV simulation/replay use the same `csv_output.py` functions, so there is only one CSV output implementation to maintain.
-
-## Manual steering override
-
-`K` toggles manual steering mode. While it is ON, A/D do not change steering and the angle is held directly at the manually entered value. Use `-` for negative angles and `ENTER` to apply, with the value clamped to ±30°.
-
-Manual text entry uses `TAB` to cycle through active fields. With manual pedals and manual steering both enabled, the fields are `THROTTLE`, `BRAKE`, and `STEERING`.
-
-Game mode controls: `A = right/positive`, `D = left/negative`; steering smoothing is 90°/s when manual steering is OFF. CSV replay keeps CSV steering unless manual steering mode is explicitly enabled.
+Game recording and simulation results use the existing 19-column schema containing position, velocity, and forces. `generate_csv.py` writes a separate six-column control-input schema for replay. It does not add or change the simulation-state output columns.

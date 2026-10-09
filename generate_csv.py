@@ -37,29 +37,23 @@ the speed profile is limited so that  k * v  never exceeds the +-30 deg range.
 Physics engine usage
 --------------------
 Nothing is re-implemented here.  The script imports the simulator itself:
-    car.Car / car.DriverInputs        -> the exact integrator used by main.py
-    config.CarParams                  -> mass, grip, stiffness, limits
+    simulation.Car / DriverInputs     -> the exact integrator used by main.py
+    config.CarParameters              -> mass, grip, stiffness, limits
     physics.motor.propulsion_force    -> throttle -> force (back-EMF model)
     physics.braking.braking_force     -> pedal/pressures -> braking force
     physics.drag / rolling_resistance -> resistive forces
 A Car instance is driven step-by-step with the very commands being written to
 the CSV, so the CSV replays to the same trajectory in main.py / run_sim.py.
-(This codebase has no steering.py / dynamics.py / tire.py; the lateral model
-lives in physics/traction.py and car.py.)
-
-Run it from the simulator root (or keep it there) so the imports resolve.
 
 Usage:
     python generate_csv.py                 # uses TRACK below
     python generate_csv.py my_track.csv    # CSV with x,y columns (no/with header)
 
-Sign convention: positive steerAngle increases heading (counter-clockwise in
-x-y, i.e. a left turn when +x is forward and +y is left).  The track is
-translated/rotated so the first point is the origin and the first segment
-points along +x, because the simulator always starts at x=0, y=0, heading=0.
+Sign convention: positive steering increases heading counter-clockwise.
 """
 
 import csv
+from itertools import chain
 import math
 import os
 import sys
@@ -70,7 +64,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.getcwd())
 
 from car import Car, DriverInputs                                  # noqa: E402
-from config import CarParams                                       # noqa: E402
+from config import CarParameters                                       # noqa: E402
 from physics.braking import braking_force as engine_braking_force  # noqa: E402
 from physics.drag import drag_force                                # noqa: E402
 from physics.motor import propulsion_force                         # noqa: E402
@@ -85,7 +79,7 @@ NUM_LAPS = 3
 # Centerline of the track (x, y) in metres.  The loop is closed automatically
 # (last point connects back to the first).  Replace with your own polyline.
 TRACK = [
-    (0, 0), (0,240), (120, 0), (165, 5), (200, 25), (210, 60),
+    (0, 0), (60,0), (120, 0), (165, 5), (200, 25), (210, 60),
     (195, 90), (160, 100), (125, 95), (100, 115), (95, 150),
     (75, 175), (40, 180), (10, 165), (-5, 135), (10, 105),
     (35, 85), (30, 55), (5, 30),
@@ -93,12 +87,14 @@ TRACK = [
 
 TRACK_HALF_WIDTH = 6.0          # m, centerline to edge
 CAR_MARGIN = 1.5                # m, keep this far from the edge
-USE_RACING_LINE = True
+# Keep False when TRACK points are the route the car should follow.
+# True shifts the route away from the supplied centerline.
+USE_RACING_LINE = False
 
 # ---------------------------------------------------------------------------
 # Vehicle parameters come straight from the simulator's config.py
 # ---------------------------------------------------------------------------
-P = CarParams()
+P = CarParameters()
 MASS = P.mass
 MAX_STEER_DEG = P.max_steering_angle_deg
 DT = P.sim_dt                   # 0.01 s (100 Hz)
@@ -137,6 +133,7 @@ FB_ZETA = 0.9
 STEER_LEAD_EXTRA = 0.15         # s, extra preview => early turn-in
 
 CTRL_DS = 1.0                   # m, spacing of the control path
+TRACK_RECOVERY_DISTANCE = 20.0 # m, reacquire globally after a large tracking error
 
 
 # ============================================================================
@@ -253,43 +250,50 @@ def curvature_from_points(x, y, ds):
     return th, dth / (2.0 * ds)
 
 
-class Path:
-    """Closed control path in the simulator frame (start at origin, heading 0)."""
+class TrackPath:
+    """Closed path in the supplied world coordinates."""
 
     def __init__(self, track):
-        # coarse resample -> optional racing line -> control-resolution resample
+        # Ordered TRACK points define the centerline. Racing-line offset is opt-in.
         x, y, total = resample_closed(track, 2.0)
         if USE_RACING_LINE:
             w = max(0.0, TRACK_HALF_WIDTH - CAR_MARGIN)
             x, y = minimum_curvature_line(x, y, w)
         x, y, total = resample_closed(np.column_stack([x, y]), CTRL_DS)
 
-        self.n = len(x)
-        self.ds = total / self.n
+        self.point_count = len(x)
+        self.spacing_m = total / self.point_count
         self.length = total
-        self.s = np.arange(self.n) * self.ds
+        self.distance_samples_m = np.arange(self.point_count) * self.spacing_m
 
-        # Move into the simulator frame: start at (0,0), first heading = 0.
-        th0 = math.atan2(y[1] - y[-1], x[1] - x[-1])
-        c, s_ = math.cos(-th0), math.sin(-th0)
-        xs, ys = x - x[0], y - y[0]
-        self.x = c * xs - s_ * ys
-        self.y = s_ * xs + c * ys
+        # Keep supplied coordinates and align the simulated heading separately.
+        self.x = x.copy()
+        self.y = y.copy()
 
-        theta, kappa = curvature_from_points(self.x, self.y, self.ds)
-        sig = KAPPA_SMOOTH_M / self.ds
+        theta, kappa = curvature_from_points(self.x, self.y, self.spacing_m)
+        sig = KAPPA_SMOOTH_M / self.spacing_m
         self.kappa = _gauss_smooth_circular(kappa, sig)
         # heading from smoothed curvature (integrated) is avoided: use raw
         # heading from geometry, which is what the car must match.
         self.theta = theta
 
-        half = max(1, int(round(KAPPA_MAX_WINDOW_M / self.ds)))
+        half = max(1, int(round(KAPPA_MAX_WINDOW_M / self.spacing_m)))
         self.kappa_eff = _gauss_smooth_circular(
             _max_filter_circular(np.abs(self.kappa), half), sig * 0.5)
 
-    def at(self, arr, s):
-        return float(np.interp(s % self.length, self.s, arr, period=self.length))
+    def at(self, values, distance_m):
+        return float(
+            np.interp(
+                distance_m % self.length,
+                self.distance_samples_m,
+                values,
+                period=self.length,
+            )
+        )
 
+
+# Keep the original class name available to existing track-generator callers.
+Path = TrackPath
 
 # ============================================================================
 # Speed plan
@@ -310,12 +314,12 @@ def accel_full_throttle(v):
     return (_prop(1.0, v) - _drag(v) - _roll(v)) / MASS
 
 
-def plan_speed(path):
+def plan_speed(path: TrackPath):
     k = np.maximum(path.kappa_eff, 1e-6)
     v_steer = STEER_USE * math.radians(MAX_STEER_DEG) / k
     v_grip = np.sqrt(A_LAT_MAX / k)
     v = np.minimum(np.minimum(v_steer, v_grip), V_TOP)
-    n, ds = path.n, path.ds
+    n, ds = path.point_count, path.spacing_m
 
     for _ in range(3):
         for i in range(2 * n - 1, -1, -1):          # braking (backward)
@@ -336,7 +340,11 @@ def standing_start_table(ds, length):
     vv = 0.0
     while s[-1] < length:
         acc = max(0.05, A_ACCEL_SCALE * accel_full_throttle(vv))
-        vv = math.sqrt(vv * vv + 2.0 * acc * ds) if vv > 0 else math.sqrt(2.0 * acc * ds)
+        vv = (
+            math.sqrt(vv * vv + 2.0 * acc * ds)
+            if vv > 0
+            else math.sqrt(2.0 * acc * ds)
+        )
         s.append(s[-1] + ds)
         v.append(vv)
     return np.array(s), np.array(v)
@@ -380,17 +388,17 @@ def _slew(cur, target, up, down, dt):
 # ============================================================================
 # Control generation
 # ============================================================================
-def generate_controls(path):
+def generate_controls(path: TrackPath):
     v_plan, dvds = plan_speed(path)
     s_tab, v_tab = standing_start_table(1.0, path.length * 1.5)
     total_dist = NUM_LAPS * path.length
 
-    car = Car(P)                                    # the real simulator car
+    car = Car(P, initial_heading_rad=path.theta[0]) # align with the first TRACK segment
     thr_s = bp_s = steer_s = 0.0
     braking_on = False
     idx_total = 0
     last_idx = 0
-    n_pts = path.n
+    n_pts = path.point_count
     win = np.arange(-20, 21)
 
     wn, zeta = FB_OMEGA_N, FB_ZETA
@@ -406,7 +414,13 @@ def generate_controls(path):
         # ---- locate the car on the path (progress + tracking errors) ----
         cand = (last_idx + win) % n_pts
         d2 = (path.x[cand] - x) ** 2 + (path.y[cand] - y) ** 2
-        j = int(cand[int(np.argmin(d2))])
+        local_min = int(np.argmin(d2))
+        if d2[local_min] > TRACK_RECOVERY_DISTANCE ** 2:
+            # Reacquire globally after leaving the local search window.
+            global_d2 = (path.x - x) ** 2 + (path.y - y) ** 2
+            j = int(np.argmin(global_d2))
+        else:
+            j = int(cand[local_min])
         delta_idx = (j - last_idx + n_pts // 2) % n_pts - n_pts // 2
         idx_total += delta_idx
         last_idx = j
@@ -414,7 +428,7 @@ def generate_controls(path):
         dxp, dyp = x - path.x[j], y - path.y[j]
         e_y = -dxp * math.sin(th_j) + dyp * math.cos(th_j)       # left +
         s_frac = dxp * math.cos(th_j) + dyp * math.sin(th_j)
-        s_tot = idx_total * path.ds + s_frac
+        s_tot = idx_total * path.spacing_m + s_frac
         e_psi = float(_wrap(psi - th_j))
         s_m = s_tot % path.length
 
@@ -422,7 +436,7 @@ def generate_controls(path):
             break
 
         # ---- steering: curvature feed-forward with preview + feedback ----
-        # Engine lateral model (physics/traction.py, used by car.py): slip = steer - vy/v.
+        # At steady state, steering angle sets yaw rate in this lateral model.
         # slip -> 0 gives vy = steer*v and yaw rate = steer, so steer = k*v.
         t_lead = max(v, 0.0) * tau_lat + STEER_LEAD_EXTRA
         s_la = s_m + max(v, 0.0) * t_lead
@@ -491,15 +505,46 @@ def generate_controls(path):
 # I/O
 # ============================================================================
 def load_track_csv(fname):
+    """Load ordered track waypoints from x/y columns or two-column CSV."""
     pts = []
-    with open(fname, newline="") as fh:
-        for row in csv.reader(fh):
+    with open(fname, newline="", encoding="utf-8-sig") as fh:
+        reader = csv.reader(fh)
+        first_row = next(reader, None)
+        if first_row is None:
+            raise ValueError("track file is empty")
+
+        normalized = [cell.strip().lower() for cell in first_row]
+        x_col = next(
+            (index for index, name in enumerate(normalized)
+             if name in ("x", "track_x")),
+            None,
+        )
+        y_col = next(
+            (index for index, name in enumerate(normalized)
+             if name in ("y", "track_y")),
+            None,
+        )
+        has_named_columns = x_col is not None and y_col is not None
+        if (x_col is None) != (y_col is None):
+            raise ValueError("track CSV must contain both x and y columns")
+        if not has_named_columns:
+            x_col, y_col = 0, 1
+        rows = reader if has_named_columns else chain((first_row,), reader)
+
+        first_data_row = 2 if has_named_columns else 1
+        for row_number, row in enumerate(rows, start=first_data_row):
             try:
-                pts.append((float(row[0]), float(row[1])))
+                point = (float(row[x_col]), float(row[y_col]))
             except (ValueError, IndexError):
-                continue                                  # header / blanks
+                continue
+            if not all(math.isfinite(value) for value in point):
+                raise ValueError(f"track coordinates must be finite (row {row_number})")
+            pts.append(point)
+
     if len(pts) < 4:
         raise ValueError("track file needs at least 4 numeric x,y rows")
+    if len(set(pts)) < 4:
+        raise ValueError("track file needs at least 4 distinct waypoints")
     return pts
 
 
@@ -515,7 +560,7 @@ def write_csv(rows, fname):
 
 def main():
     track = load_track_csv(sys.argv[1]) if len(sys.argv) > 1 else TRACK
-    path = Path(track)
+    path = TrackPath(track)
     rows = generate_controls(path)
 
     arr = np.array(rows)
@@ -525,6 +570,11 @@ def main():
 
     write_csv(rows, OUTPUT_FILE)
     print(f"Track length : {path.length:.1f} m")
+    heading_degrees = math.degrees(path.theta[0])
+    print(
+        f"Initial heading: {heading_degrees:.2f} deg "
+        "(pass this when replaying the CSV)"
+    )
     print(f"Rows         : {len(rows)}  ({rows[-1][0]:.2f} s, {NUM_LAPS} laps)")
     print(f"Steer range  : {arr[:, 5].min():.1f} .. {arr[:, 5].max():.1f} deg")
     print(f"Saved        : {OUTPUT_FILE}")

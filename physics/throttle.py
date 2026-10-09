@@ -5,7 +5,11 @@ def command_torque(throttle: float, max_motor_torque: float) -> float:
     return max(0.0, min(1.0, throttle)) * max_motor_torque
 
 
-def wheel_force_from_torque(command_torque_nm: float, gear_ratio: float, wheel_radius_m: float) -> float:
+def wheel_force_from_torque(
+    command_torque_nm: float,
+    gear_ratio: float,
+    wheel_radius_m: float,
+) -> float:
     if wheel_radius_m <= 0:
         raise ValueError("wheel_radius_m must be positive")
     return command_torque_nm * gear_ratio / wheel_radius_m
