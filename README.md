@@ -162,7 +162,7 @@ Desired acceleration is limited to -6 through 4 m/s². The requested net drive f
 F_net = mass × a_des + drag + rolling_resistance
 ```
 
-For nonnegative `F_net`, throttle is estimated as the required force divided by the available full-throttle propulsion force at the current speed. Curvature-dependent throttle caps and floors adjust the driving style. For negative `F_net`, the generator uses bisection to find the brake input that produces the requested braking force under the same braking model as the simulator.
+For nonnegative `F_net`, throttle is estimated as the required force divided by the available full-throttle propulsion force at the current speed. Curvature-dependent throttle caps and floors adjust the driving style. For negative `F_net`, the generator converts the requested braking force directly to normalized pedal input using `brake_input = braking_force / max_braking_capacity`, capped to 0–1. The simulator calculates braking force as `brake_input × max_braking_capacity`. The `brakePressureFront` and `brakePressureRear` columns remain in the CSV for format compatibility and mirror the pedal input; the current physics model does not use them to calculate force.
 
 Small brake requests are ignored so the car can coast. Separate brake engagement and release thresholds reduce rapid on/off changes. The controller also limits input rates and prevents throttle from remaining active while braking.
 
@@ -175,7 +175,7 @@ Each calculated command is passed to `Car.step()`. The next control update uses 
 - Propulsion decreases as speed approaches the configured maximum speed (a back-EMF model).
 - Aerodynamic drag grows with the square of speed; rolling resistance depends on the configured coefficient and normal force.
 - Lateral tire force is computed from cornering stiffness and limited by maximum grip.
-- Braking force is calculated from brake commands and capped by maximum grip.
+- Braking force is the normalized `brakePedalTravel` multiplied by `max_braking_capacity`.
 - Position is advanced from heading and speed. Reverse, load transfer, and a combined friction circle are not currently modeled.
 
 Vehicle parameters are defined by `CarParameters` in `config.py`. Rendering scale and grid distance are available through `PlotConfig` / `GameConfig`; `pixels_per_meter` controls screen scale, while `grid_spacing_m` controls the real-world distance between grid lines.

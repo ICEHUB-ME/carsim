@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 
 from config import CarParameters
-from physics.braking import braking_force
+from physics.braking import driver_braking_force
 from physics.drag import drag_force
 from physics.motor import propulsion_force
 from physics.rolling_resistance import rolling_resistance_force
@@ -57,12 +57,9 @@ class Car:
             params.normal_force,
             state.speed,
         )
-        braking = braking_force(
-            controls.brake_pressure_front,
-            controls.brake_pressure_rear,
+        braking = driver_braking_force(
             controls.brake_pedal_travel,
             params.max_braking_capacity,
-            params.max_grip,
         )
         acceleration = (
             propulsion - aerodynamic_drag - rolling_resistance - braking

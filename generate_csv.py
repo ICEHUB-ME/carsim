@@ -19,7 +19,7 @@ Pipeline
  4. speed profile   -> corner speed limits + braking / acceleration passes
  5. controls        -> steering (curvature feed-forward + preview + feedback),
                        throttle (95-100 % straights, 40-70 % medium corners,
-                       20-40 % tight corners), front-biased brakes
+                       20-40 % tight corners), normalized brake input
  6. CSV             -> 100 Hz, three continuous laps, no resets, no jumps
 
 How the steering is scaled
@@ -40,7 +40,7 @@ Nothing is re-implemented here.  The script imports the simulator itself:
     simulation.Car / DriverInputs     -> the exact integrator used by main.py
     config.CarParameters              -> mass, grip, stiffness, limits
     physics.motor.propulsion_force    -> throttle -> force (back-EMF model)
-    physics.braking.braking_force     -> pedal/pressures -> braking force
+    physics.braking.driver_braking_force -> pedal input -> braking force
     physics.drag / rolling_resistance -> resistive forces
 A Car instance is driven step-by-step with the very commands being written to
 the CSV, so the CSV replays to the same trajectory in main.py / run_sim.py.
@@ -65,7 +65,7 @@ sys.path.insert(0, os.getcwd())
 
 from car import Car, DriverInputs                                  # noqa: E402
 from config import CarParameters                                       # noqa: E402
-from physics.braking import braking_force as engine_braking_force  # noqa: E402
+from physics.braking import driver_braking_force as engine_braking_force  # noqa: E402
 from physics.drag import drag_force                                # noqa: E402
 from physics.motor import propulsion_force                         # noqa: E402
 from physics.rolling_resistance import rolling_resistance_force    # noqa: E402
@@ -115,11 +115,9 @@ THR_K = [0.003, 0.008, 0.016, 0.025, 0.040]
 THR_CAP = [1.00, 0.70, 0.55, 0.40, 0.30]
 THR_FLOOR = [0.95, 0.45, 0.40, 0.22, 0.20]
 
-# Brakes: front-biased 2:1.  At light braking this is 40 % front / 20 % rear.
-BRAKE_FRONT_MIN = 0.40
-BRAKE_REAR_RATIO = 0.5
+# Braking uses one normalized pedal input; legacy pressure columns mirror it.
 BRAKE_ENGAGE_N = 150.0          # ignore tiny brake demands (coast instead)
-BRAKE_RELEASE_N = 50.0          # hysteresis: release only below this demand
+BRAKE_RELEASE_N = 50.0          # hysteresis: release below this demand
 
 # Actuator smoothing (per second)
 THR_RATE_UP, THR_RATE_DOWN = 3.0, 6.0
@@ -250,11 +248,28 @@ def curvature_from_points(x, y, ds):
     return th, dth / (2.0 * ds)
 
 
+def first_segment_heading(track):
+    """Return the heading of the first non-zero ordered waypoint segment."""
+    points = np.asarray(track, dtype=float)
+    if len(points) > 1 and np.hypot(*(points[0] - points[-1])) < 1e-6:
+        points = points[:-1]
+
+    segments = np.diff(points, axis=0)
+    lengths = np.hypot(segments[:, 0], segments[:, 1])
+    nonzero = np.flatnonzero(lengths > 1e-9)
+    if nonzero.size == 0:
+        raise ValueError("track needs at least one non-zero waypoint segment")
+
+    dx, dy = segments[nonzero[0]]
+    return math.atan2(dy, dx)
+
+
 class TrackPath:
     """Closed path in the supplied world coordinates."""
 
     def __init__(self, track):
         # Ordered TRACK points define the centerline. Racing-line offset is opt-in.
+        self.initial_heading_rad = first_segment_heading(track)
         x, y, total = resample_closed(track, 2.0)
         if USE_RACING_LINE:
             w = max(0.0, TRACK_HALF_WIDTH - CAR_MARGIN)
@@ -354,31 +369,22 @@ def standing_start_table(ds, length):
 # Braking helpers (force model = physics/braking.py)
 # ============================================================================
 def braking_force(front, rear, pedal):
-    return engine_braking_force(front, rear, pedal,
-                                P.max_braking_capacity, P.max_grip)
+    """Apply the simulator's single-input brake model."""
+    return engine_braking_force(pedal, P.max_braking_capacity)
 
 
 def brake_levels(u):
-    """Pedal travel and front/rear pressures for a brake demand u in [0,1]."""
+    """Return pedal input and mirrored legacy front/rear CSV fields."""
     u = min(1.0, max(0.0, u))
-    ramp = min(1.0, u / 0.40)                         # pressure builds with pedal
-    front = min(1.0, BRAKE_FRONT_MIN * ramp + (1.0 - BRAKE_FRONT_MIN) * u)
-    return u, front, front * BRAKE_REAR_RATIO
+    return u, u, u
 
 
 def brake_demand_for_force(force):
-    """Brake demand u that produces the requested braking force."""
-    target = min(force, P.max_grip)
-    lo, hi = 0.0, 1.0
-    for _ in range(30):                               # monotonic -> bisection
-        mid = 0.5 * (lo + hi)
-        _, f, r = brake_levels(mid)
-        if braking_force(f, r, mid) < target:
-            lo = mid
-        else:
-            hi = mid
-    return 0.5 * (lo + hi)
-
+    """Convert requested braking force to normalized pedal demand."""
+    capacity = max(0.0, P.max_braking_capacity)
+    if capacity == 0.0:
+        return 0.0
+    return min(1.0, max(0.0, force / capacity))
 
 def _slew(cur, target, up, down, dt):
     d = target - cur
@@ -393,7 +399,8 @@ def generate_controls(path: TrackPath):
     s_tab, v_tab = standing_start_table(1.0, path.length * 1.5)
     total_dist = NUM_LAPS * path.length
 
-    car = Car(P, initial_heading_rad=path.theta[0]) # align with the first TRACK segment
+    # Generate controls for the same +X / waypoint-segment start used by replay.
+    car = Car(P, initial_heading_rad=path.initial_heading_rad)
     thr_s = bp_s = steer_s = 0.0
     braking_on = False
     idx_total = 0
@@ -570,7 +577,7 @@ def main():
 
     write_csv(rows, OUTPUT_FILE)
     print(f"Track length : {path.length:.1f} m")
-    heading_degrees = math.degrees(path.theta[0])
+    heading_degrees = math.degrees(path.initial_heading_rad)
     print(
         f"Initial heading: {heading_degrees:.2f} deg "
         "(pass this when replaying the CSV)"
