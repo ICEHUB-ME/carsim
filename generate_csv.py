@@ -306,10 +306,6 @@ class TrackPath:
             )
         )
 
-
-# Keep the original class name available to existing track-generator callers.
-Path = TrackPath
-
 # ============================================================================
 # Speed plan
 # ============================================================================
