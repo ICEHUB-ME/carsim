@@ -71,7 +71,7 @@ class GameConfig:
     steering_rate_deg: float = 90.0
     path_max_points: int = 10_000
     physics_accumulator_limit: float = 0.25
-    pixels_per_meter: float = 1.0
+    pixels_per_meter: float = 10.0
     grid_spacing_m: float = 10.0
 
     @property
@@ -93,8 +93,3 @@ class GameConfig:
             grid_spacing_m=self.grid_spacing_m,
             path_max_points=self.path_max_points,
         )
-
-
-# Preserve the original public import while new code uses the clearer name.
-CarParams = CarParameters
-GameParams = GameConfig
