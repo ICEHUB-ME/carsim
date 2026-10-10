@@ -89,7 +89,7 @@ TRACK_HALF_WIDTH = 6.0          # m, centerline to edge
 CAR_MARGIN = 1.5                # m, keep this far from the edge
 # Keep False when TRACK points are the route the car should follow.
 # True shifts the route away from the supplied centerline.
-USE_RACING_LINE = False
+USE_RACING_LINE = True
 
 # ---------------------------------------------------------------------------
 # Vehicle parameters come straight from the simulator's config.py
