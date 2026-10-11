@@ -89,7 +89,7 @@ TRACK_HALF_WIDTH = 6.0          # m, centerline to edge
 CAR_MARGIN = 1.5                # m, keep this far from the edge
 # Keep False when TRACK points are the route the car should follow.
 # True shifts the route away from the supplied centerline.
-USE_RACING_LINE = True
+USE_RACING_LINE = False
 
 # ---------------------------------------------------------------------------
 # Vehicle parameters come straight from the simulator's config.py
@@ -104,7 +104,7 @@ DT = P.sim_dt                   # 0.01 s (100 Hz)
 # ---------------------------------------------------------------------------
 STEER_USE = 0.80                # fraction of 30 deg the speed plan may use
 A_LAT_MAX = 7.0                 # m/s^2 comfortable lateral accel (k v^2)
-V_TOP = 24.0                    # m/s plan ceiling (above full-throttle limit)
+V_TOP = 27.0                    # m/s plan ceiling (above full-throttle limit)
 A_BRAKE_PLAN = 3.8              # m/s^2 planned braking decel
 A_ACCEL_SCALE = 0.90            # fraction of available accel the plan assumes
 KAPPA_SMOOTH_M = 5.0            # m, Gaussian smoothing of curvature
