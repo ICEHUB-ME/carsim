@@ -82,7 +82,7 @@ After generation, the script prints the initial heading that aligns the simulate
 python main.py sim generate_natural_3laps.csv --initial-heading-deg 90
 ```
 
-The input waypoints are smoothed by a periodic cubic spline. The resulting path passes smoothly near sharp corners rather than following each corner as a sharp polyline turn. `USE_RACING_LINE=False` by default, so the route is not offset from the supplied centerline.
+The input waypoints are smoothed by a periodic cubic spline. The resulting path passes smoothly near sharp corners rather than following each corner as a sharp polyline turn. `USE_RACING_LINE=False` by default, so the route is not offset from the supplied centerline. On the first lap, the generator drives straight from the first waypoint to the next one before joining the periodic route. This launch segment prevents the final-to-first closing section from steering the car at startup; the closing section remains part of the route after the first waypoint.
 
 ## How `generate_csv.py` calculates the controls
 

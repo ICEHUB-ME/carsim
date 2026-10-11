@@ -248,8 +248,8 @@ def curvature_from_points(x, y, ds):
     return th, dth / (2.0 * ds)
 
 
-def first_segment_heading(track):
-    """Return the heading of the first non-zero ordered waypoint segment."""
+def first_segment_details(track):
+    """Return the first point, next distinct waypoint, and heading."""
     points = np.asarray(track, dtype=float)
     if len(points) > 1 and np.hypot(*(points[0] - points[-1])) < 1e-6:
         points = points[:-1]
@@ -260,8 +260,17 @@ def first_segment_heading(track):
     if nonzero.size == 0:
         raise ValueError("track needs at least one non-zero waypoint segment")
 
-    dx, dy = segments[nonzero[0]]
-    return math.atan2(dy, dx)
+    segment_index = int(nonzero[0])
+    start = tuple(points[0])
+    next_waypoint = tuple(points[segment_index + 1])
+    dx, dy = segments[segment_index]
+    heading = math.atan2(dy, dx)
+    return start, next_waypoint, heading
+
+
+def first_segment_heading(track):
+    """Return the heading of the first non-zero ordered waypoint segment."""
+    return first_segment_details(track)[2]
 
 
 class TrackPath:
@@ -269,7 +278,10 @@ class TrackPath:
 
     def __init__(self, track):
         # Ordered TRACK points define the centerline. Racing-line offset is opt-in.
-        self.initial_heading_rad = first_segment_heading(track)
+        self.start_point, self.first_waypoint, self.initial_heading_rad = (
+            first_segment_details(track)
+        )
+        self.startup_distance_m = math.dist(self.start_point, self.first_waypoint)
         x, y, total = resample_closed(track, 2.0)
         if USE_RACING_LINE:
             w = max(0.0, TRACK_HALF_WIDTH - CAR_MARGIN)
@@ -399,6 +411,10 @@ def generate_controls(path: TrackPath):
     car = Car(P, initial_heading_rad=path.initial_heading_rad)
     thr_s = bp_s = steer_s = 0.0
     braking_on = False
+    startup_active = True
+    startup_x, startup_y = path.start_point
+    startup_dx = math.cos(path.initial_heading_rad)
+    startup_dy = math.sin(path.initial_heading_rad)
     idx_total = 0
     last_idx = 0
     n_pts = path.point_count
@@ -414,26 +430,50 @@ def generate_controls(path: TrackPath):
         cs = car.state
         x, y, psi, v = cs.x, cs.y, cs.heading, cs.speed
 
-        # ---- locate the car on the path (progress + tracking errors) ----
-        cand = (last_idx + win) % n_pts
-        d2 = (path.x[cand] - x) ** 2 + (path.y[cand] - y) ** 2
-        local_min = int(np.argmin(d2))
-        if d2[local_min] > TRACK_RECOVERY_DISTANCE ** 2:
-            # Reacquire globally after leaving the local search window.
-            global_d2 = (path.x - x) ** 2 + (path.y - y) ** 2
-            j = int(np.argmin(global_d2))
+        # Drive the first waypoint segment directly so the closing segment
+        # cannot bend the car away from its initial heading.
+        startup_mode = False
+        startup_progress = (
+            (x - startup_x) * startup_dx + (y - startup_y) * startup_dy
+        )
+        if startup_active and startup_progress < path.startup_distance_m:
+            startup_mode = True
+            s_tot = max(0.0, startup_progress)
+            s_m = s_tot
+            th_j = path.initial_heading_rad
+            target_x = startup_x + startup_dx * s_tot
+            target_y = startup_y + startup_dy * s_tot
+            dxp, dyp = x - target_x, y - target_y
+            e_y = -dxp * math.sin(th_j) + dyp * math.cos(th_j)
+            e_psi = float(_wrap(psi - th_j))
         else:
-            j = int(cand[local_min])
-        delta_idx = (j - last_idx + n_pts // 2) % n_pts - n_pts // 2
-        idx_total += delta_idx
-        last_idx = j
-        th_j = path.theta[j]
-        dxp, dyp = x - path.x[j], y - path.y[j]
-        e_y = -dxp * math.sin(th_j) + dyp * math.cos(th_j)       # left +
-        s_frac = dxp * math.cos(th_j) + dyp * math.sin(th_j)
-        s_tot = idx_total * path.spacing_m + s_frac
-        e_psi = float(_wrap(psi - th_j))
-        s_m = s_tot % path.length
+            if startup_active:
+                # Rejoin the periodic route at the first waypoint after launch.
+                startup_active = False
+                waypoint_x, waypoint_y = path.first_waypoint
+                waypoint_d2 = (path.x - waypoint_x) ** 2 + (path.y - waypoint_y) ** 2
+                last_idx = int(np.argmin(waypoint_d2))
+                idx_total = last_idx
+
+            cand = (last_idx + win) % n_pts
+            d2 = (path.x[cand] - x) ** 2 + (path.y[cand] - y) ** 2
+            local_min = int(np.argmin(d2))
+            if d2[local_min] > TRACK_RECOVERY_DISTANCE ** 2:
+                # Reacquire globally after leaving the local search window.
+                global_d2 = (path.x - x) ** 2 + (path.y - y) ** 2
+                j = int(np.argmin(global_d2))
+            else:
+                j = int(cand[local_min])
+            delta_idx = (j - last_idx + n_pts // 2) % n_pts - n_pts // 2
+            idx_total += delta_idx
+            last_idx = j
+            th_j = path.theta[j]
+            dxp, dyp = x - path.x[j], y - path.y[j]
+            e_y = -dxp * math.sin(th_j) + dyp * math.cos(th_j)       # left +
+            s_frac = dxp * math.cos(th_j) + dyp * math.sin(th_j)
+            s_tot = idx_total * path.spacing_m + s_frac
+            e_psi = float(_wrap(psi - th_j))
+            s_m = s_tot % path.length
 
         if s_tot >= total_dist:
             break
@@ -443,7 +483,7 @@ def generate_controls(path: TrackPath):
         # slip -> 0 gives vy = steer*v and yaw rate = steer, so steer = k*v.
         t_lead = max(v, 0.0) * tau_lat + STEER_LEAD_EXTRA
         s_la = s_m + max(v, 0.0) * t_lead
-        k_ff = path.at(path.kappa, s_la)
+        k_ff = 0.0 if startup_mode else path.at(path.kappa, s_la)
         delta_ff = k_ff * v                                      # rad
         gain = min(1.0, v / 4.0)
         k2 = wn * wn / max(v, 5.0)
@@ -454,15 +494,29 @@ def generate_controls(path: TrackPath):
 
         # ---- speed control ----
         s_ref = s_m + v * 0.15
-        v_ref = path.at(v_plan, s_ref)
-        dv_ds = path.at(dvds, s_ref)
-        v_ref = min(v_ref, float(np.interp(s_tot, s_tab, v_tab)) + 1.5)
+        if startup_mode:
+            # Use a standing-start profile on the straight launch segment.
+            s_start_ref = min(
+                max(0.0, s_tot + max(v, 0.0) * 0.15),
+                path.startup_distance_m,
+            )
+            v_ref = float(np.interp(s_start_ref, s_tab, v_tab))
+            lower_s = max(0.0, s_start_ref - 0.5)
+            upper_s = min(path.startup_distance_m, s_start_ref + 0.5)
+            dv_ds = (
+                float(np.interp(upper_s, s_tab, v_tab))
+                - float(np.interp(lower_s, s_tab, v_tab))
+            ) / max(upper_s - lower_s, 1e-6)
+        else:
+            v_ref = path.at(v_plan, s_ref)
+            dv_ds = path.at(dvds, s_ref)
+            v_ref = min(v_ref, float(np.interp(s_tot, s_tab, v_tab)) + 1.5)
         a_des = v * dv_ds + 1.5 * (v_ref - v)
         a_des = max(-6.0, min(4.0, a_des))
         f_res = _drag(v) + _roll(v)
         f_net = MASS * a_des + f_res
 
-        kap_now = path.at(path.kappa_eff, s_m + 5.0)
+        kap_now = 0.0 if startup_mode else path.at(path.kappa_eff, s_m + 5.0)
         cap = float(np.interp(kap_now, THR_K, THR_CAP))
         floor = float(np.interp(kap_now, THR_K, THR_FLOOR))
 

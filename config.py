@@ -71,7 +71,7 @@ class GameConfig:
     steering_rate_deg: float = 90.0
     path_max_points: int = 20_000
     physics_accumulator_limit: float = 0.25
-    pixels_per_meter: float = 3.0
+    pixels_per_meter: float = 7.5
     grid_spacing_m: float = 10.0
 
     @property
@@ -92,4 +92,4 @@ class GameConfig:
             pixels_per_meter=self.pixels_per_meter,
             grid_spacing_m=self.grid_spacing_m,
             path_max_points=self.path_max_points,
-        )
+        )   
