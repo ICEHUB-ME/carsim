@@ -318,6 +318,15 @@ class TrackPath:
             )
         )
 
+    def at_before_finish(self, values, distance_m):
+        """Sample a route value without wrapping into the next lap."""
+        bounded_distance = np.clip(
+            distance_m,
+            self.distance_samples_m[0],
+            self.distance_samples_m[-1],
+        )
+        return float(np.interp(bounded_distance, self.distance_samples_m, values))
+
 # ============================================================================
 # Speed plan
 # ============================================================================
@@ -337,23 +346,40 @@ def accel_full_throttle(v):
     return (_prop(1.0, v) - _drag(v) - _roll(v)) / MASS
 
 
-def plan_speed(path: TrackPath):
+def plan_speed(path: TrackPath, *, final_lap=False):
     k = np.maximum(path.kappa_eff, 1e-6)
     v_steer = STEER_USE * math.radians(MAX_STEER_DEG) / k
     v_grip = np.sqrt(A_LAT_MAX / k)
     v = np.minimum(np.minimum(v_steer, v_grip), V_TOP)
     n, ds = path.point_count, path.spacing_m
 
+    if final_lap:
+        # The finish is an open endpoint: the next lap's corner must not cause
+        # braking before the car crosses the finish line.
+        v[-1] = V_TOP
+
     for _ in range(3):
-        for i in range(2 * n - 1, -1, -1):          # braking (backward)
-            a, b = i % n, (i + 1) % n
+        backward_indices = range(n - 2, -1, -1) if final_lap else range(2 * n - 1, -1, -1)
+        for i in backward_indices:                   # braking (backward)
+            a, b = (i, i + 1) if final_lap else (i % n, (i + 1) % n)
             v[a] = min(v[a], math.sqrt(v[b] ** 2 + 2.0 * A_BRAKE_PLAN * ds))
-        for i in range(2 * n):                       # acceleration (forward)
-            a, b = i % n, (i + 1) % n
+        forward_indices = range(n - 1) if final_lap else range(2 * n)
+        for i in forward_indices:                    # acceleration (forward)
+            a, b = (i, i + 1) if final_lap else (i % n, (i + 1) % n)
             acc = max(0.05, A_ACCEL_SCALE * accel_full_throttle(v[a]))
             v[b] = min(v[b], math.sqrt(v[a] ** 2 + 2.0 * acc * ds))
-    dvds = (np.roll(v, -1) - np.roll(v, 1)) / (2.0 * ds)
+    if final_lap:
+        dvds = np.gradient(v, ds, edge_order=1)
+    else:
+        dvds = (np.roll(v, -1) - np.roll(v, 1)) / (2.0 * ds)
     return v, dvds
+
+
+def sample_route_value(path, values, distance_m, *, final_lap):
+    """Sample a plan cyclically, or clamp it at the final finish line."""
+    if final_lap:
+        return path.at_before_finish(values, distance_m)
+    return path.at(values, distance_m)
 
 
 def standing_start_table(ds, length):
@@ -404,6 +430,7 @@ def _slew(cur, target, up, down, dt):
 # ============================================================================
 def generate_controls(path: TrackPath):
     v_plan, dvds = plan_speed(path)
+    final_v_plan, final_dvds = plan_speed(path, final_lap=True)
     s_tab, v_tab = standing_start_table(1.0, path.length * 1.5)
     total_dist = NUM_LAPS * path.length
 
@@ -478,12 +505,18 @@ def generate_controls(path: TrackPath):
         if s_tot >= total_dist:
             break
 
+        final_lap = s_tot >= (NUM_LAPS - 1) * path.length
+        active_v_plan = final_v_plan if final_lap else v_plan
+        active_dvds = final_dvds if final_lap else dvds
+
         # ---- steering: curvature feed-forward with preview + feedback ----
         # At steady state, steering angle sets yaw rate in this lateral model.
         # slip -> 0 gives vy = steer*v and yaw rate = steer, so steer = k*v.
         t_lead = max(v, 0.0) * tau_lat + STEER_LEAD_EXTRA
         s_la = s_m + max(v, 0.0) * t_lead
-        k_ff = 0.0 if startup_mode else path.at(path.kappa, s_la)
+        k_ff = 0.0 if startup_mode else sample_route_value(
+            path, path.kappa, s_la, final_lap=final_lap
+        )
         delta_ff = k_ff * v                                      # rad
         gain = min(1.0, v / 4.0)
         k2 = wn * wn / max(v, 5.0)
@@ -508,15 +541,24 @@ def generate_controls(path: TrackPath):
                 - float(np.interp(lower_s, s_tab, v_tab))
             ) / max(upper_s - lower_s, 1e-6)
         else:
-            v_ref = path.at(v_plan, s_ref)
-            dv_ds = path.at(dvds, s_ref)
+            v_ref = sample_route_value(
+                path, active_v_plan, s_ref, final_lap=final_lap
+            )
+            dv_ds = sample_route_value(
+                path, active_dvds, s_ref, final_lap=final_lap
+            )
             v_ref = min(v_ref, float(np.interp(s_tot, s_tab, v_tab)) + 1.5)
         a_des = v * dv_ds + 1.5 * (v_ref - v)
         a_des = max(-6.0, min(4.0, a_des))
         f_res = _drag(v) + _roll(v)
         f_net = MASS * a_des + f_res
 
-        kap_now = 0.0 if startup_mode else path.at(path.kappa_eff, s_m + 5.0)
+        kap_now = (
+            0.0 if startup_mode
+            else sample_route_value(
+                path, path.kappa_eff, s_m + 5.0, final_lap=final_lap
+            )
+        )
         cap = float(np.interp(kap_now, THR_K, THR_CAP))
         floor = float(np.interp(kap_now, THR_K, THR_FLOOR))
 
